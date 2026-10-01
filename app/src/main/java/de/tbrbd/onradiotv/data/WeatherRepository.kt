@@ -20,27 +20,58 @@ private val WEATHER_CODE_MAP: Map<Int, String> = mapOf(
     95 to "Gewitter", 96 to "Gewitter mit Hagel", 99 to "Starkes Gewitter",
 )
 
+// Mirrors app/weather_service.py's WEATHER_CODE_MAP icon slugs, used to pick
+// a matching emoji for the current condition (see weatherEmojiFor() in
+// TvScreen.kt) instead of bundling the Pi's SVG icon set.
+private val WEATHER_ICON_SLUG_MAP: Map<Int, String> = mapOf(
+    0 to "sunny", 1 to "mostly-clear", 2 to "partly-cloudy", 3 to "cloudy",
+    45 to "fog", 48 to "fog",
+    51 to "drizzle", 53 to "drizzle", 55 to "rain",
+    56 to "freezing", 57 to "freezing",
+    61 to "drizzle", 63 to "rain", 65 to "rain",
+    66 to "freezing", 67 to "freezing",
+    71 to "snow", 73 to "snow", 75 to "snow", 77 to "snow",
+    80 to "drizzle", 81 to "rain", 82 to "rain",
+    85 to "snow", 86 to "snow",
+    95 to "thunder", 96 to "thunder", 99 to "thunder",
+)
+
+private const val PRESSURE_TREND_DELTA_HPA = 1
+
 /**
  * Ports app/weather_service.py's Open-Meteo integration (public API, no key
- * needed). Location is fixed for now - see README for how to change it.
+ * needed). The location name is passed into fetchWeather() each call (it's
+ * user-configurable, stored in AppPreferences) rather than fixed at
+ * construction, so geocoding is re-done whenever it changes.
  */
 class WeatherRepository(
     private val client: OkHttpClient,
-    private val locationName: String = "Falkensee",
     private val countryCode: String = "DE",
 ) {
-    private var cachedLatLon: Pair<Double, Double>? = null
+    private var cachedGeocode: Pair<String, GeocodeResult>? = null
+    private var previousPressureHpa: Int? = null
 
-    fun fetchWeather(): WeatherState? {
+    fun fetchWeather(locationName: String): WeatherState? {
         return try {
-            val (lat, lon) = cachedLatLon ?: geocode()?.also { cachedLatLon = it } ?: return null
-            fetchForecast(lat, lon)
+            val cached = cachedGeocode
+            val geocodeResult = if (cached != null && cached.first == locationName) {
+                cached.second
+            } else {
+                geocode(locationName)?.also { cachedGeocode = locationName to it } ?: return null
+            }
+            fetchForecast(geocodeResult)
         } catch (_: Exception) {
             null
         }
     }
 
-    private fun geocode(): Pair<Double, Double>? {
+    // The input name is whatever the viewer typed, which may not match
+    // official capitalization/spelling (e.g. "berlin") - the API's own
+    // "name" field in the result is the canonical form, and is what gets
+    // displayed, not the raw input.
+    private data class GeocodeResult(val displayName: String, val latitude: Double, val longitude: Double)
+
+    private fun geocode(locationName: String): GeocodeResult? {
         val url = "https://geocoding-api.open-meteo.com/v1/search".toHttpUrl().newBuilder()
             .addQueryParameter("name", locationName)
             .addQueryParameter("count", "1")
@@ -54,18 +85,24 @@ class WeatherRepository(
             val results = JSONObject(body).optJSONArray("results") ?: return null
             if (results.length() == 0) return null
             val first = results.getJSONObject(0)
-            return first.getDouble("latitude") to first.getDouble("longitude")
+            return GeocodeResult(
+                displayName = first.optString("name").ifBlank { locationName },
+                latitude = first.getDouble("latitude"),
+                longitude = first.getDouble("longitude"),
+            )
         }
     }
 
-    private fun fetchForecast(lat: Double, lon: Double): WeatherState? {
+    private fun fetchForecast(geocode: GeocodeResult): WeatherState? {
+        val lat = geocode.latitude
+        val lon = geocode.longitude
         val url = "https://api.open-meteo.com/v1/forecast".toHttpUrl().newBuilder()
             .addQueryParameter("latitude", lat.toString())
             .addQueryParameter("longitude", lon.toString())
             .addQueryParameter("timezone", "Europe/Berlin")
             .addQueryParameter("forecast_days", "3")
             .addQueryParameter("daily", "weather_code,temperature_2m_max,temperature_2m_min")
-            .addQueryParameter("current", "temperature_2m,weather_code")
+            .addQueryParameter("current", "temperature_2m,surface_pressure,weather_code")
             .addQueryParameter("temperature_unit", "celsius")
             .build()
 
@@ -78,6 +115,11 @@ class WeatherRepository(
 
             val currentCode = current?.optInt("weather_code", -1) ?: -1
             val currentTemp = current?.optDouble("temperature_2m")?.takeUnless { it.isNaN() }
+            val currentPressure = current?.optDouble("surface_pressure")
+                ?.takeUnless { it.isNaN() }
+                ?.let { Math.round(it).toInt() }
+            val pressureTrend = pressureTrend(previousPressureHpa, currentPressure)
+            previousPressureHpa = currentPressure
 
             val labels = listOf("Heute", "Morgen", "Übermorgen")
             val times = daily?.optJSONArray("time")
@@ -98,11 +140,24 @@ class WeatherRepository(
             }
 
             return WeatherState(
-                location = locationName,
+                location = geocode.displayName,
                 temperatureC = currentTemp,
                 condition = WEATHER_CODE_MAP[currentCode] ?: "Wetter",
+                iconSlug = WEATHER_ICON_SLUG_MAP[currentCode],
+                pressureHpa = currentPressure,
+                pressureTrend = pressureTrend,
                 days = days,
             )
+        }
+    }
+
+    private fun pressureTrend(previous: Int?, current: Int?): String? {
+        if (previous == null || current == null) return null
+        val delta = current - previous
+        return when {
+            delta >= PRESSURE_TREND_DELTA_HPA -> "up"
+            delta <= -PRESSURE_TREND_DELTA_HPA -> "down"
+            else -> "steady"
         }
     }
 }

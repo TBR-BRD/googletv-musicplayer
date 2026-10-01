@@ -6,6 +6,8 @@ private const val PREFS_NAME = "onradio_tv_prefs"
 private const val KEY_FAVORITES = "favorite_station_ids"
 private const val KEY_LAST_STATION_PREFIX = "last_station_for_group:"
 private const val KEY_LAST_PLAYED = "last_played_station_id"
+private const val KEY_WEATHER_LOCATION = "weather_location_name"
+private const val DEFAULT_WEATHER_LOCATION = "Falkensee"
 
 /**
  * Small local persistence layer (Android SharedPreferences - survives app
@@ -38,5 +40,12 @@ class AppPreferences(context: Context) {
 
     fun setLastPlayedStationId(stationId: String) {
         prefs.edit().putString(KEY_LAST_PLAYED, stationId).apply()
+    }
+
+    fun weatherLocationName(): String =
+        prefs.getString(KEY_WEATHER_LOCATION, DEFAULT_WEATHER_LOCATION) ?: DEFAULT_WEATHER_LOCATION
+
+    fun setWeatherLocationName(name: String) {
+        prefs.edit().putString(KEY_WEATHER_LOCATION, name.trim().ifEmpty { DEFAULT_WEATHER_LOCATION }).apply()
     }
 }

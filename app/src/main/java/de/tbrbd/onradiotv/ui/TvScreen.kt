@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -24,6 +23,8 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -34,6 +35,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
@@ -51,7 +53,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import coil.compose.AsyncImage
+import de.tbrbd.onradiotv.data.UpnpRenderer
 import de.tbrbd.onradiotv.model.Station
 import de.tbrbd.onradiotv.model.WeatherState
 import java.text.SimpleDateFormat
@@ -75,21 +79,34 @@ fun TvScreen(
     onSelectStation: (String) -> Unit,
     onToggleFavorite: (String) -> Unit,
     lastStationForGroup: (String) -> String?,
+    onSetWeatherLocation: (String) -> Unit,
+    onRefreshOutputs: () -> Unit,
+    onSelectOutput: (String?) -> Unit,
+    onAdjustOutputVolume: (Int) -> Unit,
 ) {
     var isPickerOpen by remember { mutableStateOf(false) }
+    var isLocationDialogOpen by remember { mutableStateOf(false) }
+    var isOutputPickerOpen by remember { mutableStateOf(false) }
 
     Box(modifier = Modifier.fillMaxSize().background(BgColor)) {
-        Row(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(48.dp),
-            horizontalArrangement = Arrangement.spacedBy(48.dp),
-        ) {
-            CoverColumn(coverUrl = state.coverUrl, modifier = Modifier.weight(0.42f).fillMaxHeight())
+        Row(modifier = Modifier.fillMaxSize()) {
+            // Full-bleed: no outer padding and no rounded corners here, so
+            // the cover runs flush to the screen's left/top/bottom edges
+            // instead of floating as an inset square. Only the text side
+            // keeps its own padding. 0.5625 = 9/16 of the width at this
+            // screen's 16:9 aspect makes the column exactly as wide as the
+            // screen is tall, so a square cover fills it with no letterbox
+            // bars under Fit.
+            CoverColumn(coverUrl = state.coverUrl, modifier = Modifier.weight(0.5625f).fillMaxHeight())
             SideColumn(
                 state = state,
                 onOpenPicker = { isPickerOpen = true },
-                modifier = Modifier.weight(0.58f).fillMaxHeight(),
+                onOpenLocationDialog = { isLocationDialogOpen = true },
+                onOpenOutputPicker = {
+                    isOutputPickerOpen = true
+                    onRefreshOutputs()
+                },
+                modifier = Modifier.weight(0.4375f).fillMaxHeight().padding(horizontal = 48.dp, vertical = 28.dp),
             )
         }
 
@@ -107,26 +124,46 @@ fun TvScreen(
                 onDismiss = { isPickerOpen = false },
             )
         }
+
+        if (isLocationDialogOpen) {
+            WeatherLocationDialog(
+                currentLocation = state.weather?.location ?: state.weatherLocationName,
+                onConfirm = { name ->
+                    onSetWeatherLocation(name)
+                    isLocationDialogOpen = false
+                },
+                onDismiss = { isLocationDialogOpen = false },
+            )
+        }
+
+        if (isOutputPickerOpen) {
+            OutputPickerOverlay(
+                renderers = state.upnpRenderers,
+                isDiscovering = state.isDiscoveringUpnp,
+                activeOutputRendererId = state.activeOutputRendererId,
+                activeOutputVolume = state.activeOutputVolume,
+                outputError = state.outputError,
+                onRefresh = onRefreshOutputs,
+                onSelect = onSelectOutput,
+                onAdjustVolume = onAdjustOutputVolume,
+                onDismiss = { isOutputPickerOpen = false },
+            )
+        }
     }
 }
 
 @Composable
 private fun CoverColumn(coverUrl: String?, modifier: Modifier = Modifier) {
-    Box(modifier = modifier, contentAlignment = Alignment.Center) {
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(1f)
-                .clip(RoundedCornerShape(24.dp)),
-            color = PanelColor,
-        ) {
-            AsyncImage(
-                model = coverUrl,
-                contentDescription = "Albumcover",
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize(),
-            )
-        }
+    // Covers are square but this column is taller than it is wide - Fit
+    // (rather than Crop) shows the whole cover with no part cut off,
+    // letterboxed against the panel background above/below instead.
+    Box(modifier = modifier.background(PanelColor).clipToBounds(), contentAlignment = Alignment.Center) {
+        AsyncImage(
+            model = coverUrl,
+            contentDescription = "Albumcover",
+            contentScale = ContentScale.Fit,
+            modifier = Modifier.fillMaxSize(),
+        )
     }
 }
 
@@ -134,14 +171,22 @@ private fun CoverColumn(coverUrl: String?, modifier: Modifier = Modifier) {
 private fun SideColumn(
     state: TvUiState,
     onOpenPicker: () -> Unit,
+    onOpenLocationDialog: () -> Unit,
+    onOpenOutputPicker: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val currentStation = state.stations.find { it.id == state.currentStationId }
 
     Column(modifier = modifier, verticalArrangement = Arrangement.SpaceBetween) {
         Column {
-            Header(stationName = currentStation?.name ?: "OnRadio TV")
-
+            Text(
+                text = currentStation?.name ?: "Radioplayer",
+                color = AccentColor,
+                fontSize = 24.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
             Text(
                 text = state.nowPlaying?.title ?: "Noch kein Titel",
                 color = TextColor,
@@ -149,7 +194,7 @@ private fun SideColumn(
                 fontWeight = FontWeight.Bold,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(top = 24.dp),
+                modifier = Modifier.padding(top = 8.dp),
             )
             Text(
                 text = state.nowPlaying?.artist ?: "Bitte einen Sender auswählen.",
@@ -160,18 +205,58 @@ private fun SideColumn(
                 modifier = Modifier.padding(top = 8.dp),
             )
 
-            WeatherPanel(weather = state.weather, modifier = Modifier.padding(top = 32.dp))
+            WeatherPanel(
+                weather = state.weather,
+                onOpenLocationDialog = onOpenLocationDialog,
+                modifier = Modifier.padding(top = 18.dp),
+            )
         }
 
-        StationSelectorButton(
-            stationName = currentStation?.name ?: "Sender wählen",
-            onOpen = onOpenPicker,
-        )
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            StationSelectorButton(
+                stationName = currentStation?.name ?: "Sender wählen",
+                onOpen = onOpenPicker,
+                modifier = Modifier.weight(1f),
+            )
+            OutputSelectorButton(
+                outputName = state.upnpRenderers.find { it.id == state.activeOutputRendererId }?.friendlyName
+                    ?: "Dieser Fernseher",
+                onOpen = onOpenOutputPicker,
+                modifier = Modifier.weight(1f),
+            )
+        }
     }
 }
 
+// Mirrors app/weather_service.py's icon_slug -> SVG mapping; this app has no
+// server to serve those SVGs from, so an emoji per slug stands in instead.
+private val WEATHER_ICON_EMOJI: Map<String, String> = mapOf(
+    "sunny" to "☀️",
+    "mostly-clear" to "🌤️",
+    "partly-cloudy" to "⛅",
+    "cloudy" to "☁️",
+    "fog" to "🌫️",
+    "drizzle" to "🌦️",
+    "rain" to "🌧️",
+    "freezing" to "🥶",
+    "snow" to "❄️",
+    "thunder" to "⛈️",
+)
+
+private val PRESSURE_TREND_SYMBOL: Map<String, String> = mapOf(
+    "up" to "↑",
+    "down" to "↓",
+    "steady" to "→",
+)
+
 @Composable
-private fun Header(stationName: String) {
+private fun WeatherPanel(
+    weather: WeatherState?,
+    onOpenLocationDialog: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (weather == null) return
+
     var now by remember { mutableStateOf(Date()) }
     LaunchedEffect(Unit) {
         while (true) {
@@ -180,36 +265,67 @@ private fun Header(stationName: String) {
         }
     }
     val timeFormat = remember { SimpleDateFormat("HH:mm", Locale.GERMANY) }
-    val dateFormat = remember { SimpleDateFormat("EEEE, dd.MM.", Locale.GERMANY) }
+    val dateFormat = remember { SimpleDateFormat("EEEE, dd.MM.yyyy", Locale.GERMANY) }
 
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.Top,
-    ) {
-        Text(text = stationName, color = AccentColor, fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
-        Column(horizontalAlignment = Alignment.End) {
-            Text(text = timeFormat.format(now), color = TextColor, fontSize = 40.sp, fontWeight = FontWeight.Bold)
-            Text(text = dateFormat.format(now), color = MutedColor, fontSize = 16.sp)
-        }
-    }
-}
+    val interactionSource = remember { MutableInteractionSource() }
+    val isFocused by interactionSource.collectIsFocusedAsState()
 
-@Composable
-private fun WeatherPanel(weather: WeatherState?, modifier: Modifier = Modifier) {
-    if (weather == null) return
     Surface(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .focusable(interactionSource = interactionSource)
+            .onKeyEvent { event ->
+                if (event.type == KeyEventType.KeyDown && event.key in ENTER_KEYS) {
+                    onOpenLocationDialog()
+                    true
+                } else {
+                    false
+                }
+            },
         color = PanelColor,
         shape = RoundedCornerShape(16.dp),
+        border = if (isFocused) BorderStroke(2.dp, FocusColor) else null,
     ) {
-        Column(modifier = Modifier.padding(20.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column {
+                    Text(text = weather.location, color = MutedColor, fontSize = 14.sp)
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
+                        Text(
+                            text = weather.pressureHpa?.let { "Luftdruck: $it hPa" } ?: "Luftdruck: -",
+                            color = MutedColor,
+                            fontSize = 14.sp,
+                        )
+                        weather.pressureTrend?.let { trend ->
+                            Text(
+                                text = "  ${PRESSURE_TREND_SYMBOL[trend] ?: ""}",
+                                color = MutedColor,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                            )
+                        }
+                    }
+                }
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(text = timeFormat.format(now), color = TextColor, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    Text(text = dateFormat.format(now), color = MutedColor, fontSize = 12.sp)
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 10.dp)) {
+                Text(
+                    text = weather.iconSlug?.let { WEATHER_ICON_EMOJI[it] } ?: "",
+                    fontSize = 30.sp,
+                )
                 Text(
                     text = weather.temperatureC?.let { "${it.toInt()}°" } ?: "--°",
                     color = TextColor,
                     fontSize = 34.sp,
                     fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(start = 12.dp),
                 )
                 Text(
                     text = "  ${weather.condition}",
@@ -219,7 +335,7 @@ private fun WeatherPanel(weather: WeatherState?, modifier: Modifier = Modifier) 
                 )
             }
             Row(
-                modifier = Modifier.padding(top = 16.dp),
+                modifier = Modifier.padding(top = 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 weather.days.take(3).forEach { day ->
@@ -237,18 +353,41 @@ private fun WeatherPanel(weather: WeatherState?, modifier: Modifier = Modifier) 
 
 /** The always-visible trigger on the main screen; opens the full picker. */
 @Composable
-private fun StationSelectorButton(stationName: String, onOpen: () -> Unit) {
+private fun StationSelectorButton(stationName: String, onOpen: () -> Unit, modifier: Modifier = Modifier) {
+    val focusRequester = remember { FocusRequester() }
+
+    SelectorButton(label = "Sender", value = stationName, onOpen = onOpen, modifier = modifier.focusRequester(focusRequester))
+
+    // The main screen's first focusable widget, so it should already carry
+    // the D-pad focus as soon as the screen appears.
+    LaunchedEffect(Unit) {
+        try {
+            focusRequester.requestFocus()
+        } catch (_: IllegalStateException) {
+            // Not laid out yet on this frame - harmless, the button is still
+            // reachable, it just won't have focus by default this one time.
+        }
+    }
+}
+
+/** Opens the WLAN-speaker (UPnP/Sonos) picker; sits next to the station
+ * selector on the main screen. */
+@Composable
+private fun OutputSelectorButton(outputName: String, onOpen: () -> Unit, modifier: Modifier = Modifier) {
+    SelectorButton(label = "Ausgabe", value = outputName, onOpen = onOpen, modifier = modifier)
+}
+
+@Composable
+private fun SelectorButton(label: String, value: String, onOpen: () -> Unit, modifier: Modifier = Modifier) {
     val interactionSource = remember { MutableInteractionSource() }
     val isFocused by interactionSource.collectIsFocusedAsState()
-    val focusRequester = remember { FocusRequester() }
 
     val borderColor = if (isFocused) FocusColor else Color(0x1AFFFFFF)
     val backgroundColor = if (isFocused) Color(0x29FFD166) else PanelColor
 
     Surface(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
-            .focusRequester(focusRequester)
             .focusable(interactionSource = interactionSource)
             .onKeyEvent { event ->
                 if (event.type == KeyEventType.KeyDown && event.key in ENTER_KEYS) {
@@ -262,29 +401,16 @@ private fun StationSelectorButton(stationName: String, onOpen: () -> Unit) {
         shape = RoundedCornerShape(12.dp),
         border = BorderStroke(2.dp, borderColor),
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 16.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column {
-                Text("Sender", color = MutedColor, fontSize = 13.sp)
-                Text(stationName, color = TextColor, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
-            }
-            Text("OK ▾", color = MutedColor, fontSize = 16.sp)
-        }
-    }
-
-    // The main screen has exactly this one focusable widget, so it should
-    // already carry the D-pad focus as soon as the screen appears.
-    LaunchedEffect(Unit) {
-        try {
-            focusRequester.requestFocus()
-        } catch (_: IllegalStateException) {
-            // Not laid out yet on this frame - harmless, the button is still
-            // reachable, it just won't have focus by default this one time.
+        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
+            Text(label, color = MutedColor, fontSize = 12.sp)
+            Text(
+                value,
+                color = TextColor,
+                fontSize = 17.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }
@@ -665,6 +791,294 @@ private fun StationListItem(
             )
             if (isCurrent) {
                 Text("▶", color = AccentColor, fontSize = 16.sp)
+            }
+        }
+    }
+}
+
+/** Opened by pressing OK on the weather panel; lets the viewer change the
+ * city the forecast is for without needing adb/a settings file. */
+@Composable
+private fun WeatherLocationDialog(
+    currentLocation: String,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var text by remember { mutableStateOf(currentLocation) }
+    val fieldFocusRequester = remember { FocusRequester() }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            color = PanelColor,
+            shape = RoundedCornerShape(16.dp),
+        ) {
+            Column(modifier = Modifier.width(440.dp).padding(24.dp)) {
+                Text(
+                    text = "Ort für die Wettervorhersage",
+                    color = TextColor,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                )
+                TextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 16.dp)
+                        .focusRequester(fieldFocusRequester),
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = Color(0x1AFFFFFF),
+                        unfocusedContainerColor = Color(0x1AFFFFFF),
+                        focusedTextColor = TextColor,
+                        unfocusedTextColor = TextColor,
+                    ),
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 20.dp),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    DialogButton(label = "Abbrechen", onClick = onDismiss)
+                    DialogButton(
+                        label = "Speichern",
+                        onClick = { onConfirm(text) },
+                        modifier = Modifier.padding(start = 12.dp),
+                    )
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        try {
+            fieldFocusRequester.requestFocus()
+        } catch (_: IllegalStateException) {
+            // Not laid out yet this frame - the field is still reachable by
+            // D-pad, it just won't be pre-focused this one time.
+        }
+    }
+}
+
+@Composable
+private fun DialogButton(label: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isFocused by interactionSource.collectIsFocusedAsState()
+
+    Surface(
+        modifier = modifier
+            .focusable(interactionSource = interactionSource)
+            .onKeyEvent { event ->
+                if (event.type == KeyEventType.KeyDown && event.key in ENTER_KEYS) {
+                    onClick()
+                    true
+                } else {
+                    false
+                }
+            },
+        color = if (isFocused) Color(0x29FFD166) else Color.Transparent,
+        shape = RoundedCornerShape(8.dp),
+        border = BorderStroke(2.dp, if (isFocused) FocusColor else Color(0x1AFFFFFF)),
+    ) {
+        Text(
+            text = label,
+            color = TextColor,
+            fontSize = 16.sp,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+        )
+    }
+}
+
+/** Lets the viewer pick between this TV's own speaker and any UPnP/Sonos
+ * renderer found on the LAN, and adjust the active renderer's volume - the
+ * same local-network discovery and AVTransport/RenderingControl calls
+ * app/upnp_renderer.py uses on the Pi, just triggered from this UI instead
+ * of a web page. */
+@Composable
+private fun OutputPickerOverlay(
+    renderers: List<UpnpRenderer>,
+    isDiscovering: Boolean,
+    activeOutputRendererId: String?,
+    activeOutputVolume: Int?,
+    outputError: String?,
+    onRefresh: () -> Unit,
+    onSelect: (String?) -> Unit,
+    onAdjustVolume: (Int) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    BackHandler(onBack = onDismiss)
+    val focusManager = LocalFocusManager.current
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(ScrimColor)
+            .onKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
+                when (event.key) {
+                    Key.DirectionUp -> {
+                        focusManager.moveFocus(FocusDirection.Up); true
+                    }
+                    Key.DirectionDown -> {
+                        focusManager.moveFocus(FocusDirection.Down); true
+                    }
+                    else -> false
+                }
+            },
+        contentAlignment = Alignment.CenterEnd,
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxHeight(0.7f)
+                .width(620.dp)
+                .padding(end = 24.dp),
+            color = PanelColor,
+            shape = RoundedCornerShape(20.dp),
+        ) {
+            Column(modifier = Modifier.padding(24.dp)) {
+                Text("Ausgabe wählen", color = TextColor, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    "OK wählt · bei WLAN-Lautsprechern ◀ ▶ = Lautstärke · Zurück schließt",
+                    color = MutedColor,
+                    fontSize = 13.sp,
+                    modifier = Modifier.padding(top = 4.dp, bottom = 16.dp),
+                )
+
+                if (outputError != null) {
+                    Text(
+                        text = "Fehler: $outputError",
+                        color = Color(0xFFFF8A8A),
+                        fontSize = 14.sp,
+                        modifier = Modifier.padding(bottom = 12.dp),
+                    )
+                }
+
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    item {
+                        OutputRow(
+                            name = "Dieser Fernseher",
+                            isActive = activeOutputRendererId == null,
+                            volume = null,
+                            onSelect = { onSelect(null) },
+                            onAdjustVolume = null,
+                        )
+                    }
+                    itemsIndexed(renderers, key = { _, r -> r.id }) { _, renderer ->
+                        OutputRow(
+                            name = renderer.friendlyName,
+                            isActive = activeOutputRendererId == renderer.id,
+                            volume = if (activeOutputRendererId == renderer.id) activeOutputVolume else null,
+                            onSelect = { onSelect(renderer.id) },
+                            onAdjustVolume = if (activeOutputRendererId == renderer.id) onAdjustVolume else null,
+                        )
+                    }
+                }
+
+                RefreshRow(
+                    isDiscovering = isDiscovering,
+                    onRefresh = onRefresh,
+                    modifier = Modifier.padding(top = 16.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RefreshRow(isDiscovering: Boolean, onRefresh: () -> Unit, modifier: Modifier = Modifier) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isFocused by interactionSource.collectIsFocusedAsState()
+
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .focusable(interactionSource = interactionSource)
+            .onKeyEvent { event ->
+                if (event.type == KeyEventType.KeyDown && event.key in ENTER_KEYS) {
+                    onRefresh()
+                    true
+                } else {
+                    false
+                }
+            },
+        color = if (isFocused) Color(0x29FFD166) else PanelColor,
+        shape = RoundedCornerShape(10.dp),
+        border = BorderStroke(2.dp, if (isFocused) FocusColor else Color(0x1AFFFFFF)),
+    ) {
+        Text(
+            text = if (isDiscovering) "Suche läuft …" else "Suche nach WLAN-Lautsprechern aktualisieren",
+            color = if (isDiscovering) MutedColor else TextColor,
+            fontSize = 15.sp,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+        )
+    }
+}
+
+@Composable
+private fun OutputRow(
+    name: String,
+    isActive: Boolean,
+    volume: Int?,
+    onSelect: () -> Unit,
+    onAdjustVolume: ((Int) -> Unit)?,
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isFocused by interactionSource.collectIsFocusedAsState()
+
+    val backgroundColor = when {
+        isFocused -> Color(0x29FFD166)
+        isActive -> Color(0x2E4E95FF)
+        else -> Color.Transparent
+    }
+    val borderColor = when {
+        isFocused -> FocusColor
+        isActive -> AccentColor
+        else -> Color.Transparent
+    }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .focusable(interactionSource = interactionSource)
+            .onKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
+                when {
+                    event.key in ENTER_KEYS -> {
+                        onSelect(); true
+                    }
+                    onAdjustVolume != null && event.key == Key.DirectionRight -> {
+                        onAdjustVolume(5); true
+                    }
+                    onAdjustVolume != null && event.key == Key.DirectionLeft -> {
+                        onAdjustVolume(-5); true
+                    }
+                    else -> false
+                }
+            },
+        color = backgroundColor,
+        shape = RoundedCornerShape(10.dp),
+        border = BorderStroke(2.dp, borderColor),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = name,
+                color = if (isActive) FocusColor else TextColor,
+                fontSize = 17.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            if (isActive) {
+                Text("▶", color = AccentColor, fontSize = 15.sp, modifier = Modifier.padding(end = 8.dp))
+            }
+            if (volume != null) {
+                Text("◀ $volume% ▶", color = MutedColor, fontSize = 14.sp)
             }
         }
     }

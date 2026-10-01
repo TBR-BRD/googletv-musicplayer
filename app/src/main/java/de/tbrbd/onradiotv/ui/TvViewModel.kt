@@ -8,6 +8,8 @@ import de.tbrbd.onradiotv.data.AudioStreamResolver
 import de.tbrbd.onradiotv.data.CoverArtRepository
 import de.tbrbd.onradiotv.data.NowPlayingRepository
 import de.tbrbd.onradiotv.data.StationRepository
+import de.tbrbd.onradiotv.data.UpnpRenderer
+import de.tbrbd.onradiotv.data.UpnpRendererService
 import de.tbrbd.onradiotv.data.WeatherRepository
 import de.tbrbd.onradiotv.model.NowPlaying
 import de.tbrbd.onradiotv.model.Station
@@ -33,6 +35,13 @@ data class TvUiState(
     val nowPlaying: NowPlaying? = null,
     val coverUrl: String? = null,
     val weather: WeatherState? = null,
+    val weatherLocationName: String = "",
+    // null = playing locally on this TV's own speaker/output.
+    val upnpRenderers: List<UpnpRenderer> = emptyList(),
+    val isDiscoveringUpnp: Boolean = false,
+    val activeOutputRendererId: String? = null,
+    val activeOutputVolume: Int? = null,
+    val outputError: String? = null,
 )
 
 private const val METADATA_REFRESH_MS = 15_000L
@@ -50,6 +59,7 @@ class TvViewModel(application: Application) : AndroidViewModel(application) {
     private val nowPlayingRepository = NowPlayingRepository(client, audioStreamResolver)
     private val coverArtRepository = CoverArtRepository(client)
     private val weatherRepository = WeatherRepository(client)
+    private val upnpRendererService = UpnpRendererService(application, client)
     private val player = RadioPlayer(application)
     private val prefs = AppPreferences(application)
 
@@ -57,6 +67,7 @@ class TvViewModel(application: Application) : AndroidViewModel(application) {
     val state: StateFlow<TvUiState> = _state.asStateFlow()
 
     private var metadataJob: Job? = null
+    private var weatherJob: Job? = null
 
     init {
         // Bundled snapshot first, so the app works immediately and offline -
@@ -66,7 +77,13 @@ class TvViewModel(application: Application) : AndroidViewModel(application) {
         // snapshot just keeps being used; this is a best-effort refresh,
         // never a requirement for the app to work.
         val stations = stationRepository.loadBundledStations()
-        _state.update { it.copy(stations = stations, favoriteIds = prefs.favoriteIds()) }
+        _state.update {
+            it.copy(
+                stations = stations,
+                favoriteIds = prefs.favoriteIds(),
+                weatherLocationName = prefs.weatherLocationName(),
+            )
+        }
 
         // Resume where the viewer left off last time, if that station still
         // exists in the catalog; otherwise just start from the top.
@@ -106,10 +123,106 @@ class TvViewModel(application: Application) : AndroidViewModel(application) {
                     station.audioUrl
                 }
             }
-            player.play(resolvedUrl)
+            activateOutput(_state.value.activeOutputRendererId, station, resolvedUrl)
         }
 
         startMetadataLoop(station)
+    }
+
+    /** Starts playback of resolvedUrl on whichever output is currently
+     * selected - this TV's own speaker, or a UPnP renderer on the LAN
+     * (Sonos, Denon, ...). Called both when switching stations and when the
+     * viewer switches outputs for the station already playing. */
+    private suspend fun activateOutput(rendererId: String?, station: Station, resolvedUrl: String) {
+        if (rendererId == null) {
+            player.play(resolvedUrl)
+            return
+        }
+
+        player.stop()
+        val outcome = withContext(Dispatchers.IO) {
+            runCatching {
+                val renderer = upnpRendererService.getRenderer(rendererId)
+                    ?: throw RuntimeException("WLAN-Lautsprecher nicht gefunden")
+                upnpRendererService.playStream(renderer, resolvedUrl, stationName = station.name)
+                upnpRendererService.getVolume(renderer)
+            }
+        }
+        outcome.fold(
+            onSuccess = { volume -> _state.update { it.copy(activeOutputVolume = volume, outputError = null) } },
+            onFailure = { error ->
+                // Fall back to the TV's own speaker rather than going silent.
+                player.play(resolvedUrl)
+                _state.update {
+                    it.copy(activeOutputRendererId = null, activeOutputVolume = null, outputError = error.message)
+                }
+            },
+        )
+    }
+
+    fun refreshUpnpRenderers() {
+        viewModelScope.launch {
+            _state.update { it.copy(isDiscoveringUpnp = true) }
+            val renderers = withContext(Dispatchers.IO) {
+                try {
+                    upnpRendererService.listRenderers(forceRefresh = true, timeoutSeconds = 4)
+                } catch (_: Exception) {
+                    emptyList()
+                }
+            }
+            _state.update { it.copy(upnpRenderers = renderers, isDiscoveringUpnp = false) }
+        }
+    }
+
+    /** rendererId null switches back to this TV's own speaker. */
+    fun selectOutput(rendererId: String?) {
+        val previousRendererId = _state.value.activeOutputRendererId
+        val currentStation = _state.value.stations.find { it.id == _state.value.currentStationId }
+        _state.update { it.copy(activeOutputRendererId = rendererId, activeOutputVolume = null, outputError = null) }
+
+        // Stop the TV's own speaker right here, synchronously, before any of
+        // the network round-trips below - those (resolving the stream URL,
+        // reaching the renderer) can take a second or more, and leaving the
+        // old audio running until they finish meant both outputs were
+        // audible at once for that whole stretch.
+        if (rendererId != null) {
+            player.stop()
+        }
+
+        viewModelScope.launch {
+            if (previousRendererId != null && previousRendererId != rendererId) {
+                withContext(Dispatchers.IO) {
+                    runCatching {
+                        upnpRendererService.getRenderer(previousRendererId)?.let { upnpRendererService.stop(it) }
+                    }
+                }
+            }
+            val station = currentStation ?: return@launch
+            val resolvedUrl = withContext(Dispatchers.IO) {
+                try {
+                    audioStreamResolver.resolve(station)
+                } catch (_: Exception) {
+                    station.audioUrl
+                }
+            }
+            activateOutput(rendererId, station, resolvedUrl)
+        }
+    }
+
+    fun adjustActiveOutputVolume(deltaPercent: Int) {
+        val rendererId = _state.value.activeOutputRendererId ?: return
+        viewModelScope.launch {
+            val newVolume = withContext(Dispatchers.IO) {
+                runCatching {
+                    val renderer = upnpRendererService.getRenderer(rendererId) ?: return@runCatching null
+                    val current = upnpRendererService.getVolume(renderer) ?: 50
+                    upnpRendererService.setVolume(renderer, current + deltaPercent)
+                }.getOrNull()
+            }
+            if (newVolume != null) {
+                _state.update { it.copy(activeOutputVolume = newVolume) }
+            }
+        }
     }
 
     fun toggleFavorite(stationId: String) {
@@ -119,6 +232,12 @@ class TvViewModel(application: Application) : AndroidViewModel(application) {
 
     fun lastStationForGroup(group: String): String? = prefs.lastStationForGroup(group)
 
+    fun setWeatherLocationName(name: String) {
+        prefs.setWeatherLocationName(name)
+        _state.update { it.copy(weatherLocationName = prefs.weatherLocationName(), weather = null) }
+        refreshWeatherLoop()
+    }
+
     private fun startMetadataLoop(station: Station) {
         metadataJob?.cancel()
         metadataJob = viewModelScope.launch {
@@ -126,7 +245,7 @@ class TvViewModel(application: Application) : AndroidViewModel(application) {
                 val nowPlaying = withContext(Dispatchers.IO) { nowPlayingRepository.fetch(station) }
                 _state.update { if (it.currentStationId == station.id) it.copy(nowPlaying = nowPlaying) else it }
 
-                val cover = withContext(Dispatchers.IO) {
+                val cover = nowPlaying.providerCoverUrl ?: withContext(Dispatchers.IO) {
                     coverArtRepository.findCoverUrl(nowPlaying.artist, nowPlaying.title)
                 }
                 _state.update { if (it.currentStationId == station.id) it.copy(coverUrl = cover) else it }
@@ -137,9 +256,11 @@ class TvViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun refreshWeatherLoop() {
-        viewModelScope.launch {
+        weatherJob?.cancel()
+        weatherJob = viewModelScope.launch {
             while (isActive) {
-                val weather = withContext(Dispatchers.IO) { weatherRepository.fetchWeather() }
+                val locationName = _state.value.weatherLocationName
+                val weather = withContext(Dispatchers.IO) { weatherRepository.fetchWeather(locationName) }
                 _state.update { it.copy(weather = weather) }
                 delay(WEATHER_REFRESH_MS)
             }

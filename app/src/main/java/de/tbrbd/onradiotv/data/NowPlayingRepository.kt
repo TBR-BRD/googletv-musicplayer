@@ -17,11 +17,10 @@ private val TITLE_KEYS = listOf("title", "song_title", "songTitle", "track")
 private val CURRENT_KEYS = listOf("current", "now", "now_playing", "playing")
 
 /**
- * Ports the relevant parts of app/playlist_fetcher.py. Only "0nradio_json"
- * and "icy_stream" (the two modes covering the vast majority of the station
- * catalog) are fully implemented; every other mode (e.g. "80s80s_api")
- * degrades gracefully to just the station name instead of a real title -
- * see the project README for why.
+ * Ports the relevant parts of app/playlist_fetcher.py. "0nradio_json",
+ * "icy_stream" and "80s80s_api" (together covering the entire current
+ * station catalog) are fully implemented; any future mode not covered here
+ * degrades gracefully to just the station name instead of a real title.
  */
 class NowPlayingRepository(
     private val client: OkHttpClient,
@@ -33,6 +32,7 @@ class NowPlayingRepository(
             when (station.metadataMode) {
                 "0nradio_json" -> fetchOnRadioJson(station)
                 "icy_stream" -> fetchIcyStream(station)
+                "80s80s_api" -> fetch80s80sApi(station)
                 else -> fallback(station)
             }
         } catch (exc: Exception) {
@@ -101,6 +101,45 @@ class NowPlayingRepository(
             if (text.isNotEmpty() && text != "null") return text
         }
         return ""
+    }
+
+    /** The 80s80s API serves every one of their streams' now-playing info in
+     * a single shared JSON blob, keyed by an arbitrary/irrelevant string -
+     * find this station's own entry by its stable metadataStationId. */
+    private fun fetch80s80sApi(station: Station): NowPlaying {
+        val stationId = station.metadataStationId ?: return fallback(station)
+        val request = Request.Builder().url(station.metadataUrl).build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) return fallback(station)
+            val body = response.body?.string() ?: return fallback(station)
+            val payload = JSONObject(body)
+            val match = payload.keys().asSequence()
+                .mapNotNull { payload.optJSONObject(it) }
+                .find { it.optInt("station_id", -1) == stationId }
+                ?: return fallback(station)
+
+            val artist = firstText(match, listOf("artist_name", "artist", "artistName"))
+            val title = firstText(match, listOf("song_title", "title", "songTitle"))
+            if (artist.isBlank() || title.isBlank()) return fallback(station)
+
+            return NowPlaying(artist = artist, title = title, providerCoverUrl = extract80s80sCoverUrl(match))
+        }
+    }
+
+    private fun extract80s80sCoverUrl(node: JSONObject): String? {
+        val covers = node.optJSONObject("covers") ?: return null
+        for (key in listOf(
+            "cover_art_url_xxl",
+            "cover_art_url_xl",
+            "cover_art_url_l",
+            "cover_art_url_m",
+            "cover_art_url_s",
+            "cover_art_url_xs",
+        )) {
+            val url = covers.optString(key).trim()
+            if (url.isNotEmpty()) return url
+        }
+        return null
     }
 
     private fun fetchIcyStream(station: Station): NowPlaying {
