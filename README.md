@@ -25,21 +25,26 @@ another AirPlay-capable source) for that - this app doesn't cover it.
 
 ## Where the station list comes from
 
-`app/src/main/res/raw/stations.json` currently ships **all 253 stations**
-from the Pi project's `app/stations.py`, generated once via a small script
-that runs `station_catalog()` directly and exports it as JSON (no manual
-transcription, no transcription errors). This is a **snapshot bundled into
-the app** - it does not update itself.
+Two layers, for both freshness and offline resilience:
 
-**Open design question / likely next step:** move this to a dedicated
-stations-data repository that is regenerated automatically (e.g. every 4
-weeks via a scheduled GitHub Action) from the Pi project's `stations.py`,
-with this app fetching the current list over the network at startup instead
-of relying on a bundled snapshot. Not implemented yet.
+1. **`app/src/main/res/raw/stations.json`** - a bundled snapshot (all 253
+   stations as of the last build), used immediately on app start so the app
+   works right away and even fully offline.
+2. **[onradio-stations](https://github.com/TBR-BRD/onradio-stations)** - a
+   dedicated repo that a scheduled GitHub Action keeps in sync with the Pi
+   project's `app/stations.py` automatically (monthly, or on demand). The
+   app fetches this in the background on every launch and switches to it
+   once it arrives, so new or changed stations show up **without an app
+   update** - only falling back to the bundled snapshot if that fetch fails
+   (no network, GitHub unreachable, ...).
 
-To regenerate the bundled snapshot manually for now, run this from a clone
-of `onradio-cover-bridge` (adjust `OUTPUT` to point into a clone of this
-repo):
+See `StationRepository.kt` for the fetch-with-fallback logic.
+
+To regenerate the bundled snapshot manually (e.g. after a Gradle dependency
+bump that needs a rebuild anyway), run this from a clone of
+`onradio-cover-bridge` (adjust `OUTPUT` to point into a clone of this
+repo) - or just use [onradio-stations/generate.py](https://github.com/TBR-BRD/onradio-stations/blob/main/generate.py)
+directly, which is the same script:
 
 ```bash
 python3 - <<'EOF'

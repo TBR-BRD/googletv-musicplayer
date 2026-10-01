@@ -45,7 +45,7 @@ class TvViewModel(application: Application) : AndroidViewModel(application) {
         .readTimeout(8, TimeUnit.SECONDS)
         .build()
 
-    private val stationRepository = StationRepository(application)
+    private val stationRepository = StationRepository(application, client)
     private val audioStreamResolver = AudioStreamResolver(client)
     private val nowPlayingRepository = NowPlayingRepository(client, audioStreamResolver)
     private val coverArtRepository = CoverArtRepository(client)
@@ -59,7 +59,13 @@ class TvViewModel(application: Application) : AndroidViewModel(application) {
     private var metadataJob: Job? = null
 
     init {
-        val stations = stationRepository.loadStations()
+        // Bundled snapshot first, so the app works immediately and offline -
+        // then try to upgrade to the live catalog from onradio-stations in
+        // the background (kept in sync with the source project by a
+        // scheduled GitHub Action). If that fetch fails, the bundled
+        // snapshot just keeps being used; this is a best-effort refresh,
+        // never a requirement for the app to work.
+        val stations = stationRepository.loadBundledStations()
         _state.update { it.copy(stations = stations, favoriteIds = prefs.favoriteIds()) }
 
         // Resume where the viewer left off last time, if that station still
@@ -68,6 +74,16 @@ class TvViewModel(application: Application) : AndroidViewModel(application) {
         (resumeId ?: stations.firstOrNull()?.id)?.let { selectStation(it) }
 
         refreshWeatherLoop()
+        refreshStationCatalog()
+    }
+
+    private fun refreshStationCatalog() {
+        viewModelScope.launch {
+            val remote = withContext(Dispatchers.IO) { stationRepository.fetchRemoteStations() }
+            if (remote != null) {
+                _state.update { it.copy(stations = remote) }
+            }
+        }
     }
 
     fun selectStation(stationId: String) {
