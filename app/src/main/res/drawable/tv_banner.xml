@@ -1,0 +1,13 @@
+<!-- Placeholder 320x180dp Leanback banner - replace with real artwork later
+     (Settings/App info on Google TV, and the launcher tile, use this). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180">
+    <path android:fillColor="#0F1626" android:pathData="M0,0h320v180h-320z" />
+    <path
+        android:fillColor="#7AB6FF"
+        android:pathData="M70,50 A40,40 0 1 0 70,130 A40,40 0 1 0 70,50 Z M70,66 A24,24 0 1 1 70,114 A24,24 0 1 1 70,66 Z" />
+    <path android:fillColor="#FFD166" android:pathData="M62,82h16v16h-16z" />
+</vector>
