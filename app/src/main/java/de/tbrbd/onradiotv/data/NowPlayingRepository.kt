@@ -7,6 +7,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
+import java.nio.charset.CodingErrorAction
 
 private const val TAG = "NowPlayingRepository"
 
@@ -143,7 +144,7 @@ class NowPlayingRepository(
                     Log.w(TAG, "${station.id}: stream ended while reading metadata block")
                     return fallback(station)
                 }
-                val decoded = String(metadataBytes, Charsets.UTF_8).trimEnd('\u0000')
+                val decoded = decodeIcyMetadata(metadataBytes).trimEnd('\u0000')
                 Log.d(TAG, "${station.id}: raw ICY metadata = ${decoded.take(200)}")
                 val match = STREAM_TITLE_RE.find(decoded) ?: return@repeat
                 val streamTitle = match.groupValues[1].trim()
@@ -152,6 +153,22 @@ class NowPlayingRepository(
             }
         }
         return fallback(station)
+    }
+
+    /** ICY StreamTitle bytes are usually Latin-1 (most Shoutcast/Icecast
+     * servers), occasionally UTF-8 - there's no header announcing which.
+     * Try strict UTF-8 first since it rejects anything that isn't valid
+     * UTF-8, and only reinterpret as Latin-1 when that fails. */
+    private fun decodeIcyMetadata(bytes: ByteArray): String {
+        return try {
+            Charsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT)
+                .decode(java.nio.ByteBuffer.wrap(bytes))
+                .toString()
+        } catch (_: Exception) {
+            String(bytes, Charsets.ISO_8859_1)
+        }
     }
 
     private fun splitStreamTitle(streamTitle: String, station: Station): NowPlaying {

@@ -461,6 +461,16 @@ private fun GroupList(
                             // focus-follows-preview behaviour above.
                             focusManager.moveFocus(FocusDirection.Right)
                             true
+                        } else if (
+                            index == 0 &&
+                            event.type == KeyEventType.KeyDown &&
+                            event.key == Key.DirectionUp
+                        ) {
+                            // Belt-and-braces alongside focusProperties above:
+                            // on this device, Up on the top row still escaped
+                            // to the station list despite up = Cancel, so
+                            // swallow the key outright here too.
+                            true
                         } else {
                             false
                         }
@@ -524,14 +534,20 @@ private fun StationList(
         }
 
         LaunchedEffect(groupKey) {
+            // Only keeps the preview scrolled to the right spot when the
+            // category changes - it must NOT also grab keyboard focus here.
+            // It used to call itemFocusRequesters[targetId]?.requestFocus()
+            // too, which fired on every category highlight change (this
+            // runs whenever selectedGroup changes, including from just
+            // arrowing through the category list on the left) and yanked
+            // input focus into this list before the viewer ever pressed
+            // Right/OK - that's what made the category list unnavigable
+            // ("springt immer rechts rüber"). Entering this list on purpose
+            // (OK on a category, or an explicit Right press) already moves
+            // focus by itself via GroupList's key handler / the picker's
+            // default directional-key handling.
             if (stations.isEmpty()) return@LaunchedEffect
             listState.scrollToItem(targetIndex)
-            try {
-                itemFocusRequesters[targetId]?.requestFocus()
-            } catch (_: IllegalStateException) {
-                // Not laid out yet this frame - list stays usable, just
-                // without a specific initial focus target this one time.
-            }
         }
     }
 }
@@ -548,6 +564,8 @@ private fun StationListItem(
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val isFocused by interactionSource.collectIsFocusedAsState()
+    var longPressHandled by remember { mutableStateOf(false) }
+    var lastEnterReleaseAt by remember { mutableStateOf(0L) }
 
     val backgroundColor = when {
         isFocused -> Color(0x29FFD166)
@@ -569,16 +587,58 @@ private fun StationListItem(
             .then(if (isFirst) Modifier.focusProperties { up = FocusRequester.Cancel } else Modifier)
             .focusable(interactionSource = interactionSource)
             .onKeyEvent { event ->
-                if (event.type == KeyEventType.KeyDown && event.key in ENTER_KEYS) {
-                    // Short press OK = play this station. Long press OK
-                    // (Android reports this on the underlying native key
-                    // event) = toggle it as a favorite instead, without
-                    // switching away from what's currently playing.
-                    if (event.nativeKeyEvent.isLongPress) {
-                        onToggleFavorite()
-                    } else {
-                        onSelect()
+                if (event.key in ENTER_KEYS) {
+                    when (event.type) {
+                        KeyEventType.KeyDown -> {
+                            // Long press OK (Android flags this on the
+                            // underlying native key event) = toggle it as a
+                            // favorite. Acting on it here, as soon as it's
+                            // detected, and then suppressing the matching
+                            // KeyUp below keeps this from also starting
+                            // playback mid-hold - that extra state change was
+                            // shifting focus/scroll before the long-press
+                            // event landed, so the favorite sometimes ended
+                            // up on the wrong (shifted) row.
+                            if (event.nativeKeyEvent.isLongPress) {
+                                onToggleFavorite()
+                                longPressHandled = true
+                            }
+                            true
+                        }
+                        KeyEventType.KeyUp -> {
+                            // This remote's center button mechanically
+                            // overlaps the surrounding d-pad ring on a firm
+                            // or held press, occasionally firing a bounced
+                            // second OK release a few dozen ms after the
+                            // first - ignore any such release so it can't
+                            // immediately re-select (and cut off) whatever
+                            // the first release just started playing.
+                            val now = android.os.SystemClock.uptimeMillis()
+                            val isBounce = now - lastEnterReleaseAt < 350
+                            lastEnterReleaseAt = now
+                            if (!longPressHandled && !isBounce) {
+                                onSelect()
+                            }
+                            longPressHandled = false
+                            true
+                        }
+                        else -> false
                     }
+                } else if (
+                    event.type == KeyEventType.KeyDown &&
+                    (event.key == Key.DirectionUp || event.key == Key.DirectionDown) &&
+                    android.os.SystemClock.uptimeMillis() - lastEnterReleaseAt < 350
+                ) {
+                    // Same mechanical overlap as above, just manifesting as a
+                    // ghost Up/Down instead of a second OK - swallow it so a
+                    // held OK press can't also shift focus to the
+                    // neighbouring row right after selecting.
+                    true
+                } else if (isFirst && event.type == KeyEventType.KeyDown && event.key == Key.DirectionUp) {
+                    // Belt-and-braces alongside focusProperties above: on
+                    // this device, Up on the top row has been seen to escape
+                    // to the category list despite up = Cancel, so swallow
+                    // the key outright here too.
                     true
                 } else {
                     false
