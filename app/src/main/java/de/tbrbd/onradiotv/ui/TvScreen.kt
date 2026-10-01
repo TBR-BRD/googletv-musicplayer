@@ -214,18 +214,16 @@ private fun SideColumn(
             )
         }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             StationSelectorButton(
                 stationName = currentStation?.name ?: "Sender wählen",
                 onOpen = onOpenPicker,
-                modifier = Modifier.weight(1f),
             )
             OutputSelectorButton(
                 outputName = state.upnpRenderers.find { it.id == state.activeOutputRendererId }?.friendlyName
                     ?: state.castDevices.find { "cast:${it.routeId}" == state.activeOutputRendererId }?.name
                     ?: "Dieser Fernseher",
                 onOpen = onOpenOutputPicker,
-                modifier = Modifier.weight(1f),
             )
         }
     }

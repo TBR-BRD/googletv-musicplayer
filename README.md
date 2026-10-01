@@ -7,14 +7,25 @@ experience of the companion Raspberry Pi project
 artist / clock / weather on the right, stations selectable by remote (D-pad),
 playback directly on the TV itself.
 
+![Screenshot](docs/screenshot.png)
+
 This is **Phase 1** of a multi-stage plan:
 
 | Phase | Scope | Status |
 |---|---|---|
-| 1 | Station list, metadata, cover art, weather, playback on the TV itself | **this app** |
-| 2 | Google Cast (throw to Chromecast-capable devices) | planned |
-| 3 | UPnP/DLNA (Sonos, Denon) | planned |
+| 1 | Station list, metadata, cover art, weather, playback on the TV itself | **done** |
+| 2 | Google Cast (throw to Chromecast-capable devices) | **done** |
+| 3 | UPnP/DLNA (Sonos, Denon) | **done** |
 | – | AirPlay | **intentionally out of scope** - see below |
+
+Output device (this TV's own speaker, a Google Cast device, or a UPnP/DLNA
+renderer) is switchable at runtime from the "Ausgabe" picker next to the
+station picker - see [Controls](#controls) below. Note that UPnP renderers
+vary widely in how well they actually support arbitrary internet radio
+URLs (Sonos: yes; some AV receivers only support their own local DLNA
+media server content and will reject the stream), and Google Cast requires
+the TV's own Google Play Services to include the Cast framework module -
+not guaranteed on non-Google-TV-certified licensed Android TV hardware.
 
 ## Why no AirPlay
 
@@ -93,10 +104,10 @@ Of the 253 stations:
 
 - **193** use `icy_stream` (title read directly from the audio stream via the ICY protocol) - **fully implemented**
 - **18** use `0nradio_json` (the ON Radio family's own JSON API) - **fully implemented**
-- **42** use `80s80s_api` (80s80s's own JSON API with per-station matching) - **not implemented**, shows just the station name + "Livestream" instead of a real title
+- **42** use `80s80s_api` (80s80s's own shared now-playing endpoint, matched by each station's `metadataStationId`) - **fully implemented**, including the cover art it hands back directly
 
-That covers **83% of stations with real title/artist info**. The 80s80s
-stations play back exactly the same, they just don't show metadata.
+That's **100% of stations with real title/artist info** (and, for the
+80s80s ones, cover art straight from the API instead of an iTunes guess).
 
 ## Cover art
 
@@ -140,8 +151,18 @@ build or runtime issues and they'll get fixed.
   it instead of always starting at the first entry
 - The last-played station resumes automatically on the next app launch
 - Metadata/cover refresh every 15 seconds, weather every 10 minutes
+- **OK** on the "Ausgabe" button opens the output picker: this TV's own
+  speaker, or any discovered Google Cast / UPnP (Sonos, Denon, ...) device
+  on the LAN - **◀ / ▶** on a selected WLAN speaker's row adjusts its
+  volume (the remote's physical volume keys only control the TV's own
+  volume - on-device testing found they never reach Android as a key event
+  at all on at least one TV model, so there's no way to redirect them)
+- Playback stops automatically when the TV's screen turns off (standby),
+  on whichever output is active
 
 ## Changing the weather location
 
-Currently hardcoded to "Falkensee" (`WeatherRepository` constructor call in
-`TvViewModel.kt`) - adjust `locationName`/`countryCode` there if needed.
+Configurable in-app: press OK on the weather panel to open a dialog and
+type a new city name (stored on-device, defaults to "Falkensee"). The
+display always shows the geocoding API's canonical spelling, regardless of
+how it was typed.
