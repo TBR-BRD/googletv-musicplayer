@@ -10,7 +10,7 @@ import org.json.JSONArray
 
 private const val TAG = "StationRepository"
 private const val REMOTE_STATIONS_URL =
-    "https://raw.githubusercontent.com/TBR-BRD/onradio-stations/main/stations.json"
+    "https://raw.githubusercontent.com/TBR-BRD/radiostations/main/stations.json"
 
 /**
  * Loads the station catalog.
@@ -20,7 +20,7 @@ private const val REMOTE_STATIONS_URL =
  * this always works offline and is used immediately on app start.
  *
  * [fetchRemoteStations] then tries to fetch the current catalog from the
- * onradio-stations repo, which a scheduled GitHub Action keeps in sync with
+ * radiostations repo, which a scheduled GitHub Action keeps in sync with
  * the source project automatically - this is how the app picks up new
  * stations without needing an app update. If it fails (no network, GitHub
  * unreachable, ...), the bundled snapshot keeps being used; this call is a

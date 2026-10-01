@@ -30,7 +30,7 @@ Two layers, for both freshness and offline resilience:
 1. **`app/src/main/res/raw/stations.json`** - a bundled snapshot (all 253
    stations as of the last build), used immediately on app start so the app
    works right away and even fully offline.
-2. **[onradio-stations](https://github.com/TBR-BRD/onradio-stations)** - a
+2. **[radiostations](https://github.com/TBR-BRD/radiostations)** - a
    dedicated repo that a scheduled GitHub Action keeps in sync with the Pi
    project's `app/stations.py` automatically (monthly, or on demand). The
    app fetches this in the background on every launch and switches to it
@@ -43,7 +43,7 @@ See `StationRepository.kt` for the fetch-with-fallback logic.
 To regenerate the bundled snapshot manually (e.g. after a Gradle dependency
 bump that needs a rebuild anyway), run this from a clone of
 `onradio-cover-bridge` (adjust `OUTPUT` to point into a clone of this
-repo) - or just use [onradio-stations/generate.py](https://github.com/TBR-BRD/onradio-stations/blob/main/generate.py)
+repo) - or just use [radiostations/generate.py](https://github.com/TBR-BRD/radiostations/blob/main/generate.py)
 directly, which is the same script:
 
 ```bash

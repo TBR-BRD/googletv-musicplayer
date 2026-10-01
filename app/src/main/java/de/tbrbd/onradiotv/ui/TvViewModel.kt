@@ -60,7 +60,7 @@ class TvViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         // Bundled snapshot first, so the app works immediately and offline -
-        // then try to upgrade to the live catalog from onradio-stations in
+        // then try to upgrade to the live catalog from the radiostations repo in
         // the background (kept in sync with the source project by a
         // scheduled GitHub Action). If that fetch fails, the bundled
         // snapshot just keeps being used; this is a best-effort refresh,
