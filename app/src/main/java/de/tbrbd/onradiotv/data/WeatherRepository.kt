@@ -136,6 +136,7 @@ class WeatherRepository(
                     tempMaxC = tempMax?.optDouble(i)?.takeUnless { it.isNaN() },
                     tempMinC = tempMin?.optDouble(i)?.takeUnless { it.isNaN() },
                     condition = WEATHER_CODE_MAP[codes?.optInt(i)] ?: "Wetter",
+                    iconSlug = WEATHER_ICON_SLUG_MAP[codes?.optInt(i)],
                 )
             }
 

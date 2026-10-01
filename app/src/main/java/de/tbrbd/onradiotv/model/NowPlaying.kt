@@ -14,6 +14,7 @@ data class WeatherDay(
     val tempMaxC: Double?,
     val tempMinC: Double?,
     val condition: String,
+    val iconSlug: String?,
 )
 
 data class WeatherState(

@@ -238,7 +238,10 @@ private val WEATHER_ICON_EMOJI: Map<String, String> = mapOf(
     "mostly-clear" to "🌤️",
     "partly-cloudy" to "⛅",
     "cloudy" to "☁️",
-    "fog" to "🌫️",
+    // "🌫️" (fog, Unicode 8.0) renders as a missing-glyph box on at least one
+    // tested TV's emoji font - "🌁" (foggy, Unicode 6.0) is much older and
+    // far more broadly supported.
+    "fog" to "🌁",
     "drizzle" to "🌦️",
     "rain" to "🌧️",
     "freezing" to "🥶",
@@ -338,15 +341,26 @@ private fun WeatherPanel(
                 )
             }
             Row(
-                modifier = Modifier.padding(top = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(24.dp, Alignment.CenterHorizontally),
             ) {
                 weather.days.take(3).forEach { day ->
-                    Column {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(text = day.label, color = MutedColor, fontSize = 14.sp)
+                        Text(
+                            text = day.iconSlug?.let { WEATHER_ICON_EMOJI[it] } ?: "",
+                            fontSize = 22.sp,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
                         val max = day.tempMaxC?.let { "${it.toInt()}°" } ?: "--°"
                         val min = day.tempMinC?.let { "${it.toInt()}°" } ?: "--°"
-                        Text(text = "$max / $min", color = TextColor, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            text = "$max / $min",
+                            color = TextColor,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
                     }
                 }
             }
