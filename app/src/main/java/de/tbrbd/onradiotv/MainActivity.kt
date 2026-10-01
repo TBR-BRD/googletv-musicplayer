@@ -1,5 +1,9 @@
 package de.tbrbd.onradiotv
 
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -13,8 +17,20 @@ class MainActivity : ComponentActivity() {
 
     private val viewModel: TvViewModel by viewModels()
 
+    // There's no "TV was turned off" callback - ACTION_SCREEN_OFF (the
+    // display actually going dark, i.e. standby) is the closest reliable
+    // signal, and unlike onStop()/onPause() it doesn't also fire just from
+    // switching to another app while the screen stays on, which should keep
+    // playing like a real radio would.
+    private val screenOffReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            viewModel.stopPlayback()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        registerReceiver(screenOffReceiver, IntentFilter(Intent.ACTION_SCREEN_OFF))
         setContent {
             val state by viewModel.state.collectAsState()
             TvScreen(
@@ -28,6 +44,11 @@ class MainActivity : ComponentActivity() {
                 onAdjustOutputVolume = viewModel::adjustActiveOutputVolume,
             )
         }
+    }
+
+    override fun onDestroy() {
+        unregisterReceiver(screenOffReceiver)
+        super.onDestroy()
     }
 
     // The remote's physical volume keys were tried for controlling the

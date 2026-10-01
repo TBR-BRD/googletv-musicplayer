@@ -267,6 +267,21 @@ class TvViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** Called when the screen turns off (TV standby/power-off) - stops
+     * audio instead of leaving it playing unattended in the background,
+     * whether that's the TV's own speaker or a WLAN-Lautsprecher output. */
+    fun stopPlayback() {
+        player.stop()
+        val rendererId = _state.value.activeOutputRendererId
+        if (rendererId != null) {
+            viewModelScope.launch {
+                withContext(Dispatchers.IO) {
+                    runCatching { upnpRendererService.getRenderer(rendererId)?.let { upnpRendererService.stop(it) } }
+                }
+            }
+        }
+    }
+
     override fun onCleared() {
         player.release()
         super.onCleared()
