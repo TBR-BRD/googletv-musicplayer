@@ -11,19 +11,18 @@ playback directly on the TV itself.
 
 ## Download / Installation
 
-**[⬇ Radioplayer.apk herunterladen](https://github.com/TBR-BRD/googletv-musicplayer/releases/latest/download/Radioplayer.apk)**
-(neuester Stand, debug-signiert)
+**[⬇ Download Radioplayer.apk](https://github.com/TBR-BRD/googletv-musicplayer/releases/latest/download/Radioplayer.apk)**
+(latest build, debug-signed)
 
-So installierst du sie auf einem Google TV / Android TV Gerät ohne Play
-Store/Entwicklungsrechner:
+How to install it on a Google TV / Android TV device without a dev machine
+or the Play Store listing:
 
-1. Auf dem Fernseher die App **"Downloader"** aus dem Play Store installieren
-2. In Downloader obigen Link eingeben (oder den Link oben kopieren und
-   einfügen)
-3. Herunterladen lassen und installieren - bei Bedarf "Installation aus
-   unbekannten Quellen" erlauben
+1. Install the **"Downloader"** app from the Play Store on the TV
+2. Enter the link above in Downloader (copy/paste it)
+3. Let it download and install - allow "install from unknown sources" if
+   prompted
 
-Alle Releases mit Versionsverlauf: [Releases-Seite](https://github.com/TBR-BRD/googletv-musicplayer/releases)
+All releases with version history: [Releases page](https://github.com/TBR-BRD/googletv-musicplayer/releases)
 
 This is **Phase 1** of a multi-stage plan:
 
