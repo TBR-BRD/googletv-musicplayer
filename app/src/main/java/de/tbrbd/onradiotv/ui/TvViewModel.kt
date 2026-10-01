@@ -3,6 +3,9 @@ package de.tbrbd.onradiotv.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.google.android.gms.cast.framework.CastSession
+import de.tbrbd.onradiotv.cast.CastDevice
+import de.tbrbd.onradiotv.cast.CastRendererService
 import de.tbrbd.onradiotv.data.AppPreferences
 import de.tbrbd.onradiotv.data.AudioStreamResolver
 import de.tbrbd.onradiotv.data.CoverArtRepository
@@ -38,7 +41,10 @@ data class TvUiState(
     val weatherLocationName: String = "",
     // null = playing locally on this TV's own speaker/output.
     val upnpRenderers: List<UpnpRenderer> = emptyList(),
+    val castDevices: List<CastDevice> = emptyList(),
     val isDiscoveringUpnp: Boolean = false,
+    // "upnp:<id>" or "cast:<routeId>" - see the CAST_PREFIX dispatch in
+    // activateOutput() below.
     val activeOutputRendererId: String? = null,
     val activeOutputVolume: Int? = null,
     val outputError: String? = null,
@@ -46,6 +52,7 @@ data class TvUiState(
 
 private const val METADATA_REFRESH_MS = 15_000L
 private const val WEATHER_REFRESH_MS = 10 * 60_000L
+private const val CAST_PREFIX = "cast:"
 
 class TvViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -60,6 +67,7 @@ class TvViewModel(application: Application) : AndroidViewModel(application) {
     private val coverArtRepository = CoverArtRepository(client)
     private val weatherRepository = WeatherRepository(client)
     private val upnpRendererService = UpnpRendererService(application, client)
+    private val castRendererService = CastRendererService(application)
     private val player = RadioPlayer(application)
     private val prefs = AppPreferences(application)
 
@@ -92,6 +100,54 @@ class TvViewModel(application: Application) : AndroidViewModel(application) {
 
         refreshWeatherLoop()
         refreshStationCatalog()
+
+        viewModelScope.launch {
+            castRendererService.devices.collect { devices -> _state.update { it.copy(castDevices = devices) } }
+        }
+        viewModelScope.launch {
+            castRendererService.activeSession.collect { session -> onCastSessionChanged(session) }
+        }
+    }
+
+    /** Fires when the Cast SDK finishes connecting (or disconnects) a
+     * session - selectOutput() only kicks off the connection for a Cast
+     * device, since that's asynchronous; actually loading the stream once
+     * connected happens here. */
+    private fun onCastSessionChanged(session: CastSession?) {
+        val activeOutput = _state.value.activeOutputRendererId
+        if (activeOutput == null || !activeOutput.startsWith(CAST_PREFIX)) return
+        val station = _state.value.stations.find { it.id == _state.value.currentStationId }
+
+        if (session != null) {
+            if (station == null) return
+            viewModelScope.launch {
+                val resolvedUrl = withContext(Dispatchers.IO) {
+                    try {
+                        audioStreamResolver.resolve(station)
+                    } catch (_: Exception) {
+                        station.audioUrl
+                    }
+                }
+                castRendererService.playStream(resolvedUrl, title = station.name, artist = "")
+                _state.update { it.copy(activeOutputVolume = castRendererService.getVolumePercent(), outputError = null) }
+            }
+        } else {
+            // The session ended on its own (device turned off, network
+            // hiccup, ...) - fall back to the TV's own speaker.
+            _state.update { it.copy(activeOutputRendererId = null, activeOutputVolume = null) }
+            if (station != null) {
+                viewModelScope.launch {
+                    val resolvedUrl = withContext(Dispatchers.IO) {
+                        try {
+                            audioStreamResolver.resolve(station)
+                        } catch (_: Exception) {
+                            station.audioUrl
+                        }
+                    }
+                    player.play(resolvedUrl)
+                }
+            }
+        }
     }
 
     private fun refreshStationCatalog() {
@@ -130,15 +186,34 @@ class TvViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** Starts playback of resolvedUrl on whichever output is currently
-     * selected - this TV's own speaker, or a UPnP renderer on the LAN
-     * (Sonos, Denon, ...). Called both when switching stations and when the
-     * viewer switches outputs for the station already playing. */
+     * selected - this TV's own speaker, a UPnP renderer on the LAN (Sonos,
+     * Denon, ...), or a Google Cast device. Called both when switching
+     * stations and when the viewer switches outputs for the station already
+     * playing. */
     private suspend fun activateOutput(rendererId: String?, station: Station, resolvedUrl: String) {
-        if (rendererId == null) {
-            player.play(resolvedUrl)
-            return
+        when {
+            rendererId == null -> player.play(resolvedUrl)
+            rendererId.startsWith(CAST_PREFIX) -> activateCastOutput(rendererId.removePrefix(CAST_PREFIX), station, resolvedUrl)
+            else -> activateUpnpOutput(rendererId, station, resolvedUrl)
         }
+    }
 
+    // Cast SDK calls are not thread-safe like UpnpRendererService's plain
+    // blocking HTTP calls - they must stay on Main, which this already is
+    // (activateOutput only reaches Dispatchers.IO inside the UPnP branch).
+    private fun activateCastOutput(routeId: String, station: Station, resolvedUrl: String) {
+        player.stop()
+        if (castRendererService.activeSession.value != null) {
+            castRendererService.playStream(resolvedUrl, title = station.name, artist = "")
+            _state.update { it.copy(activeOutputVolume = castRendererService.getVolumePercent(), outputError = null) }
+        } else {
+            // Not connected yet - onCastSessionChanged() plays once the
+            // SessionManagerListener reports the connection is up.
+            castRendererService.selectDevice(routeId)
+        }
+    }
+
+    private suspend fun activateUpnpOutput(rendererId: String, station: Station, resolvedUrl: String) {
         player.stop()
         val outcome = withContext(Dispatchers.IO) {
             runCatching {
@@ -161,6 +236,8 @@ class TvViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun refreshUpnpRenderers() {
+        castRendererService.startDiscovery()
+
         viewModelScope.launch {
             _state.update { it.copy(isDiscoveringUpnp = true) }
             val renderers = withContext(Dispatchers.IO) {
@@ -174,7 +251,8 @@ class TvViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** rendererId null switches back to this TV's own speaker. */
+    /** rendererId null switches back to this TV's own speaker; otherwise
+     * "upnp:<id>" or "cast:<routeId>" (see CAST_PREFIX). */
     fun selectOutput(rendererId: String?) {
         val previousRendererId = _state.value.activeOutputRendererId
         val currentStation = _state.value.stations.find { it.id == _state.value.currentStationId }
@@ -189,15 +267,12 @@ class TvViewModel(application: Application) : AndroidViewModel(application) {
             player.stop()
         }
 
+        if (previousRendererId != null && previousRendererId != rendererId) {
+            stopOutput(previousRendererId)
+        }
+
+        val station = currentStation ?: return
         viewModelScope.launch {
-            if (previousRendererId != null && previousRendererId != rendererId) {
-                withContext(Dispatchers.IO) {
-                    runCatching {
-                        upnpRendererService.getRenderer(previousRendererId)?.let { upnpRendererService.stop(it) }
-                    }
-                }
-            }
-            val station = currentStation ?: return@launch
             val resolvedUrl = withContext(Dispatchers.IO) {
                 try {
                     audioStreamResolver.resolve(station)
@@ -209,8 +284,26 @@ class TvViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun stopOutput(rendererId: String) {
+        if (rendererId.startsWith(CAST_PREFIX)) {
+            castRendererService.stop()
+        } else {
+            viewModelScope.launch {
+                withContext(Dispatchers.IO) {
+                    runCatching { upnpRendererService.getRenderer(rendererId)?.let { upnpRendererService.stop(it) } }
+                }
+            }
+        }
+    }
+
     fun adjustActiveOutputVolume(deltaPercent: Int) {
         val rendererId = _state.value.activeOutputRendererId ?: return
+        if (rendererId.startsWith(CAST_PREFIX)) {
+            val current = castRendererService.getVolumePercent() ?: 50
+            castRendererService.setVolumePercent(current + deltaPercent)
+            _state.update { it.copy(activeOutputVolume = castRendererService.getVolumePercent()) }
+            return
+        }
         viewModelScope.launch {
             val newVolume = withContext(Dispatchers.IO) {
                 runCatching {
@@ -272,18 +365,12 @@ class TvViewModel(application: Application) : AndroidViewModel(application) {
      * whether that's the TV's own speaker or a WLAN-Lautsprecher output. */
     fun stopPlayback() {
         player.stop()
-        val rendererId = _state.value.activeOutputRendererId
-        if (rendererId != null) {
-            viewModelScope.launch {
-                withContext(Dispatchers.IO) {
-                    runCatching { upnpRendererService.getRenderer(rendererId)?.let { upnpRendererService.stop(it) } }
-                }
-            }
-        }
+        _state.value.activeOutputRendererId?.let { stopOutput(it) }
     }
 
     override fun onCleared() {
         player.release()
+        castRendererService.stopDiscovery()
         super.onCleared()
     }
 }

@@ -57,6 +57,14 @@ dependencies {
     // Playback
     implementation("androidx.media3:media3-exoplayer:1.4.1")
 
+    // Google Cast: official SDK handles discovery (mDNS) and the Cast v2
+    // control protocol itself, unlike the hand-rolled SSDP/SOAP client
+    // needed for UpnpRendererService - a plain unauthenticated
+    // CastMediaControlIntent.DEFAULT_MEDIA_RECEIVER_APPLICATION_ID session
+    // is enough to cast a radio stream URL, no custom receiver app needed.
+    implementation("com.google.android.gms:play-services-cast-framework:21.5.0")
+    implementation("androidx.mediarouter:mediarouter:1.7.0")
+
     // Networking + image loading
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.json:json:20240303")

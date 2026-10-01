@@ -55,6 +55,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import coil.compose.AsyncImage
+import de.tbrbd.onradiotv.cast.CastDevice
 import de.tbrbd.onradiotv.data.UpnpRenderer
 import de.tbrbd.onradiotv.model.Station
 import de.tbrbd.onradiotv.model.WeatherState
@@ -139,6 +140,7 @@ fun TvScreen(
         if (isOutputPickerOpen) {
             OutputPickerOverlay(
                 renderers = state.upnpRenderers,
+                castDevices = state.castDevices,
                 isDiscovering = state.isDiscoveringUpnp,
                 activeOutputRendererId = state.activeOutputRendererId,
                 activeOutputVolume = state.activeOutputVolume,
@@ -220,6 +222,7 @@ private fun SideColumn(
             )
             OutputSelectorButton(
                 outputName = state.upnpRenderers.find { it.id == state.activeOutputRendererId }?.friendlyName
+                    ?: state.castDevices.find { "cast:${it.routeId}" == state.activeOutputRendererId }?.name
                     ?: "Dieser Fernseher",
                 onOpen = onOpenOutputPicker,
                 modifier = Modifier.weight(1f),
@@ -896,6 +899,7 @@ private fun DialogButton(label: String, onClick: () -> Unit, modifier: Modifier 
 @Composable
 private fun OutputPickerOverlay(
     renderers: List<UpnpRenderer>,
+    castDevices: List<CastDevice>,
     isDiscovering: Boolean,
     activeOutputRendererId: String?,
     activeOutputVolume: Int?,
@@ -972,6 +976,20 @@ private fun OutputPickerOverlay(
                             volume = if (activeOutputRendererId == renderer.id) activeOutputVolume else null,
                             onSelect = { onSelect(renderer.id) },
                             onAdjustVolume = if (activeOutputRendererId == renderer.id) onAdjustVolume else null,
+                        )
+                    }
+                    itemsIndexed(castDevices, key = { _, d -> d.routeId }) { _, device ->
+                        // Must match TvViewModel's CAST_PREFIX ("cast:") -
+                        // that's how it tells a Cast route apart from a UPnP
+                        // renderer id sharing the same activeOutputRendererId
+                        // field.
+                        val castOutputId = "cast:${device.routeId}"
+                        OutputRow(
+                            name = device.name,
+                            isActive = activeOutputRendererId == castOutputId,
+                            volume = if (activeOutputRendererId == castOutputId) activeOutputVolume else null,
+                            onSelect = { onSelect(castOutputId) },
+                            onAdjustVolume = if (activeOutputRendererId == castOutputId) onAdjustVolume else null,
                         )
                     }
                 }
