@@ -332,11 +332,7 @@ class UpnpRendererService(
             val document = bytes?.let { parseXml(it) }
             val fault = document?.let { extractSoapFault(it.documentElement) }
             if (!response.isSuccessful || fault != null) {
-                Log.w(
-                    TAG,
-                    "soapAction $action -> HTTP ${response.code}, fault=$fault, " +
-                        "body=${bytes?.let { String(it, Charsets.UTF_8).take(400) }}",
-                )
+                Log.w(TAG, "soapAction $action -> HTTP ${response.code}, fault=$fault")
                 throw UpnpSoapException(
                     action = action,
                     statusCode = response.code,
