@@ -10,8 +10,11 @@ import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.lifecycle.lifecycleScope
 import de.tbrbd.onradiotv.ui.TvScreen
 import de.tbrbd.onradiotv.ui.TvViewModel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -62,8 +65,18 @@ class MainActivity : ComponentActivity() {
     // can live on for a while for Android's own caching, so this follows up
     // with an explicit kill to guarantee the next launch is a clean process.
     private fun exitApp() {
-        finishAndRemoveTask()
-        kotlin.system.exitProcess(0)
+        lifecycleScope.launch {
+            // stopPlayback() dispatches the actual STOP command (Cast/
+            // AirPlay/UPnP) onto a background executor rather than sending
+            // it synchronously - exitProcess() right after it, with no
+            // delay, was observed killing the process before that command
+            // ever reached the wire, leaving a Cast receiver (a Samsung
+            // Music Frame) playing on indefinitely after "Beenden".
+            viewModel.stopPlayback()
+            delay(400)
+            finishAndRemoveTask()
+            kotlin.system.exitProcess(0)
+        }
     }
 
     // The remote's physical volume keys were tried for controlling the
