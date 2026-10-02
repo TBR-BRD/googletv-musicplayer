@@ -85,6 +85,7 @@ fun TvScreen(
     onRefreshOutputs: () -> Unit,
     onSelectOutput: (String?) -> Unit,
     onAdjustOutputVolume: (Int) -> Unit,
+    onExit: () -> Unit,
 ) {
     var isPickerOpen by remember { mutableStateOf(false) }
     var isLocationDialogOpen by remember { mutableStateOf(false) }
@@ -108,6 +109,7 @@ fun TvScreen(
                     isOutputPickerOpen = true
                     onRefreshOutputs()
                 },
+                onExit = onExit,
                 modifier = Modifier.weight(0.4375f).fillMaxHeight().padding(horizontal = 48.dp, vertical = 28.dp),
             )
         }
@@ -177,6 +179,7 @@ private fun SideColumn(
     onOpenPicker: () -> Unit,
     onOpenLocationDialog: () -> Unit,
     onOpenOutputPicker: () -> Unit,
+    onExit: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val currentStation = state.stations.find { it.id == state.currentStationId }
@@ -228,8 +231,19 @@ private fun SideColumn(
                     ?: "Dieser Fernseher",
                 onOpen = onOpenOutputPicker,
             )
+            ExitButton(onExit = onExit)
         }
     }
+}
+
+/** Fully kills the app process (not just finish()) - the TV launcher's own
+ * long-press context menu on this device only offers "Verschieben/Öffnen/
+ * Deinstallieren", no force-stop, so this is the only in-app way to get a
+ * genuinely fresh process (clearing CastV2Client sockets, discovery state,
+ * etc.) without going through Settings -> Apps -> App-Infos. */
+@Composable
+private fun ExitButton(onExit: () -> Unit, modifier: Modifier = Modifier) {
+    SelectorButton(label = "App", value = "Beenden", onOpen = onExit, modifier = modifier)
 }
 
 // Mirrors app/weather_service.py's icon_slug -> SVG mapping; this app has no

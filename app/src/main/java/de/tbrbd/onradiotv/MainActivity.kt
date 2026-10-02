@@ -42,6 +42,7 @@ class MainActivity : ComponentActivity() {
                 onRefreshOutputs = viewModel::refreshUpnpRenderers,
                 onSelectOutput = viewModel::selectOutput,
                 onAdjustOutputVolume = viewModel::adjustActiveOutputVolume,
+                onExit = ::exitApp,
             )
         }
     }
@@ -49,6 +50,20 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         unregisterReceiver(screenOffReceiver)
         super.onDestroy()
+    }
+
+    // The TV launcher's own long-press context menu on at least one tested
+    // device only offers "Verschieben/Öffnen/Deinstallieren" - no
+    // force-stop - so this in-app "Beenden" button is the only way to get a
+    // genuinely fresh process (e.g. to force a new Cast/AirPlay connection
+    // instead of whatever stale state the current one is in) without going
+    // through Settings -> Apps -> App-Infos. finishAndRemoveTask() alone
+    // only ends the Activity/clears it from Recents - the process itself
+    // can live on for a while for Android's own caching, so this follows up
+    // with an explicit kill to guarantee the next launch is a clean process.
+    private fun exitApp() {
+        finishAndRemoveTask()
+        kotlin.system.exitProcess(0)
     }
 
     // The remote's physical volume keys were tried for controlling the
