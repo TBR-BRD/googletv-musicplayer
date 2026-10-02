@@ -12,7 +12,9 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -38,6 +40,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
@@ -223,14 +226,13 @@ private fun SideColumn(
                 )
                 ExitButton(onExit = onExit, modifier = Modifier.padding(start = 12.dp))
             }
-            Text(
+            AutoSizeText(
                 text = state.nowPlaying?.title ?: "Noch kein Titel",
                 color = TextColor,
-                fontSize = 40.sp,
+                maxFontSize = 40.sp,
+                minFontSize = 22.sp,
                 fontWeight = FontWeight.Bold,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(top = 8.dp),
+                modifier = Modifier.padding(top = 8.dp).fillMaxWidth(),
             )
             Text(
                 text = state.nowPlaying?.artist ?: "Bitte einen Sender auswählen.",
@@ -246,6 +248,11 @@ private fun SideColumn(
                 onOpenLocationDialog = onOpenLocationDialog,
                 modifier = Modifier.padding(top = 18.dp),
             )
+            // Fixed breathing room before the button stack - without it the
+            // buttons sit flush against the weather panel whenever there's
+            // no leftover slack in the weighted region above (see the
+            // overflow-fix comment on that Column).
+            Spacer(modifier = Modifier.height(20.dp))
         }
 
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -304,6 +311,47 @@ private fun ExitButton(onExit: () -> Unit, modifier: Modifier = Modifier) {
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
         )
     }
+}
+
+/** A single-line Text that shrinks its own font size (in 2sp steps) until it
+ * fits the available width, instead of wrapping - used for the now-playing
+ * title so a long one never grows the surrounding layout (which pushed the
+ * Sender/Ausgabe buttons down/off in exactly this situation - see the
+ * overflow-fix comment on SideColumn's top block). Stays invisible for the
+ * handful of measurement passes it takes to settle, to avoid a visible flash
+ * at the wrong size. */
+@Composable
+private fun AutoSizeText(
+    text: String,
+    color: Color,
+    maxFontSize: androidx.compose.ui.unit.TextUnit,
+    minFontSize: androidx.compose.ui.unit.TextUnit,
+    fontWeight: FontWeight,
+    modifier: Modifier = Modifier,
+) {
+    var fontSize by remember(text) { mutableStateOf(maxFontSize) }
+    var readyToDraw by remember(text) { mutableStateOf(false) }
+
+    Text(
+        text = text,
+        color = color,
+        fontWeight = fontWeight,
+        fontSize = fontSize,
+        maxLines = 1,
+        softWrap = false,
+        overflow = TextOverflow.Ellipsis,
+        modifier = modifier.drawWithContent { if (readyToDraw) drawContent() },
+        onTextLayout = { result ->
+            if (result.didOverflowWidth && fontSize > minFontSize) {
+                fontSize = androidx.compose.ui.unit.TextUnit(
+                    (fontSize.value - 2f).coerceAtLeast(minFontSize.value),
+                    androidx.compose.ui.unit.TextUnitType.Sp,
+                )
+            } else {
+                readyToDraw = true
+            }
+        },
+    )
 }
 
 // Mirrors app/weather_service.py's icon_slug -> SVG mapping; this app has no
@@ -493,12 +541,12 @@ private fun SelectorButton(label: String, value: String, onOpen: () -> Unit, mod
         shape = RoundedCornerShape(12.dp),
         border = BorderStroke(2.dp, borderColor),
     ) {
-        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
-            Text(label, color = MutedColor, fontSize = 12.sp)
+        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 9.dp)) {
+            Text(label, color = MutedColor, fontSize = 11.sp)
             Text(
                 value,
                 color = TextColor,
-                fontSize = 17.sp,
+                fontSize = 15.sp,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
