@@ -17,6 +17,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -110,7 +112,14 @@ fun TvScreen(
                     onRefreshOutputs()
                 },
                 onExit = onExit,
-                modifier = Modifier.weight(0.4375f).fillMaxHeight().padding(horizontal = 48.dp, vertical = 28.dp),
+                // Extra bottom margin, beyond the top/side padding: at least
+                // one tested TV crops the picture noticeably more at the
+                // bottom edge than elsewhere (overscan not fully compensated
+                // in its own firmware), and the button stack grew by a third
+                // row - without this the newest (bottom-most) one lands
+                // outside the visible/reachable area entirely.
+                modifier = Modifier.weight(0.4375f).fillMaxHeight()
+                    .padding(start = 48.dp, end = 48.dp, top = 28.dp, bottom = 56.dp),
             )
         }
 
@@ -185,15 +194,35 @@ private fun SideColumn(
     val currentStation = state.stations.find { it.id == state.currentStationId }
 
     Column(modifier = modifier, verticalArrangement = Arrangement.SpaceBetween) {
-        Column {
-            Text(
-                text = currentStation?.name ?: "Radioplayer",
-                color = AccentColor,
-                fontSize = 24.sp,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+        // weight(1f) + verticalScroll here are load-bearing, not cosmetic:
+        // without them, once the now-playing title wraps to two lines and
+        // the weather panel is fully populated, this block's natural height
+        // plus the button stack's below can exceed the screen's actual
+        // height. A plain Column (no weight on either child) doesn't shrink
+        // either child to compensate - Compose was observed collapsing the
+        // *second* button (Ausgabe) to a few pixels with no visible content
+        // at all. weight(1f) alone (fill=true, the default) bounds this
+        // block's height so the button stack below always gets its full
+        // natural size, but without verticalScroll the weather panel - which
+        // doesn't clip its own overflow - visibly bled past that bound into
+        // the buttons instead; scrolling clips cleanly at the boundary.
+        Column(modifier = Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+            Row(
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    text = currentStation?.name ?: "Radioplayer",
+                    color = AccentColor,
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                ExitButton(onExit = onExit, modifier = Modifier.padding(start = 12.dp))
+            }
             Text(
                 text = state.nowPlaying?.title ?: "Noch kein Titel",
                 color = TextColor,
@@ -231,7 +260,6 @@ private fun SideColumn(
                     ?: "Dieser Fernseher",
                 onOpen = onOpenOutputPicker,
             )
-            ExitButton(onExit = onExit)
         }
     }
 }
@@ -240,10 +268,42 @@ private fun SideColumn(
  * long-press context menu on this device only offers "Verschieben/Öffnen/
  * Deinstallieren", no force-stop, so this is the only in-app way to get a
  * genuinely fresh process (clearing CastV2Client sockets, discovery state,
- * etc.) without going through Settings -> Apps -> App-Infos. */
+ * etc.) without going through Settings -> Apps -> App-Infos. Placed as a
+ * small top-right corner button rather than a third row in the Sender/
+ * Ausgabe stack - that stack already sits close to the bottom edge on at
+ * least one tested TV (overscan not fully compensated in its own
+ * firmware), where a third row risked landing outside the visible/
+ * reachable area entirely. */
 @Composable
 private fun ExitButton(onExit: () -> Unit, modifier: Modifier = Modifier) {
-    SelectorButton(label = "App", value = "Beenden", onOpen = onExit, modifier = modifier)
+    val interactionSource = remember { MutableInteractionSource() }
+    val isFocused by interactionSource.collectIsFocusedAsState()
+
+    val borderColor = if (isFocused) FocusColor else Color(0x1AFFFFFF)
+    val backgroundColor = if (isFocused) Color(0x29FFD166) else PanelColor
+
+    Surface(
+        modifier = modifier
+            .focusable(interactionSource = interactionSource)
+            .onKeyEvent { event ->
+                if (event.type == KeyEventType.KeyDown && event.key in ENTER_KEYS) {
+                    onExit()
+                    true
+                } else {
+                    false
+                }
+            },
+        color = backgroundColor,
+        shape = RoundedCornerShape(8.dp),
+        border = BorderStroke(2.dp, borderColor),
+    ) {
+        Text(
+            "Beenden",
+            color = MutedColor,
+            fontSize = 13.sp,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+        )
+    }
 }
 
 // Mirrors app/weather_service.py's icon_slug -> SVG mapping; this app has no
