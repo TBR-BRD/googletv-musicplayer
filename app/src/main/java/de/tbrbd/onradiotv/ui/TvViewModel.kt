@@ -3,7 +3,8 @@ package de.tbrbd.onradiotv.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.google.android.gms.cast.framework.CastSession
+import de.tbrbd.onradiotv.airplay.AirPlayDevice
+import de.tbrbd.onradiotv.airplay.AirPlayRendererService
 import de.tbrbd.onradiotv.cast.CastDevice
 import de.tbrbd.onradiotv.cast.CastRendererService
 import de.tbrbd.onradiotv.data.AppPreferences
@@ -42,9 +43,10 @@ data class TvUiState(
     // null = playing locally on this TV's own speaker/output.
     val upnpRenderers: List<UpnpRenderer> = emptyList(),
     val castDevices: List<CastDevice> = emptyList(),
+    val airPlayDevices: List<AirPlayDevice> = emptyList(),
     val isDiscoveringUpnp: Boolean = false,
-    // "upnp:<id>" or "cast:<routeId>" - see the CAST_PREFIX dispatch in
-    // activateOutput() below.
+    // "upnp:<id>", "cast:<routeId>" or "airplay:<routeId>" - see the
+    // CAST_PREFIX/AIRPLAY_PREFIX dispatch in activateOutput() below.
     val activeOutputRendererId: String? = null,
     val activeOutputVolume: Int? = null,
     val outputError: String? = null,
@@ -53,6 +55,7 @@ data class TvUiState(
 private const val METADATA_REFRESH_MS = 15_000L
 private const val WEATHER_REFRESH_MS = 10 * 60_000L
 private const val CAST_PREFIX = "cast:"
+private const val AIRPLAY_PREFIX = "airplay:"
 
 class TvViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -68,6 +71,7 @@ class TvViewModel(application: Application) : AndroidViewModel(application) {
     private val weatherRepository = WeatherRepository(client)
     private val upnpRendererService = UpnpRendererService(application, client)
     private val castRendererService = CastRendererService(application)
+    private val airPlayRendererService = AirPlayRendererService(application)
     private val player = RadioPlayer(application)
     private val prefs = AppPreferences(application)
 
@@ -105,20 +109,63 @@ class TvViewModel(application: Application) : AndroidViewModel(application) {
             castRendererService.devices.collect { devices -> _state.update { it.copy(castDevices = devices) } }
         }
         viewModelScope.launch {
-            castRendererService.activeSession.collect { session -> onCastSessionChanged(session) }
+            castRendererService.isConnected.collect { connected -> onCastConnectionChanged(connected) }
+        }
+        viewModelScope.launch {
+            airPlayRendererService.devices.collect { devices -> _state.update { it.copy(airPlayDevices = devices) } }
+        }
+        viewModelScope.launch {
+            airPlayRendererService.isConnected.collect { connected -> onAirPlayConnectionChanged(connected) }
         }
     }
 
-    /** Fires when the Cast SDK finishes connecting (or disconnects) a
-     * session - selectOutput() only kicks off the connection for a Cast
-     * device, since that's asynchronous; actually loading the stream once
-     * connected happens here. */
-    private fun onCastSessionChanged(session: CastSession?) {
+    /** Fires when RaopClient finishes its RTSP handshake (or disconnects) -
+     * same async-connect pattern as onCastConnectionChanged() above. */
+    private fun onAirPlayConnectionChanged(connected: Boolean) {
+        val activeOutput = _state.value.activeOutputRendererId
+        if (activeOutput == null || !activeOutput.startsWith(AIRPLAY_PREFIX)) return
+        val station = _state.value.stations.find { it.id == _state.value.currentStationId }
+
+        if (connected) {
+            if (station == null) return
+            viewModelScope.launch {
+                val resolvedUrl = withContext(Dispatchers.IO) {
+                    try {
+                        audioStreamResolver.resolve(station)
+                    } catch (_: Exception) {
+                        station.audioUrl
+                    }
+                }
+                airPlayRendererService.playStream(resolvedUrl)
+                _state.update { it.copy(activeOutputVolume = airPlayRendererService.getVolumePercent(), outputError = null) }
+            }
+        } else {
+            _state.update { it.copy(activeOutputRendererId = null, activeOutputVolume = null) }
+            if (station != null) {
+                viewModelScope.launch {
+                    val resolvedUrl = withContext(Dispatchers.IO) {
+                        try {
+                            audioStreamResolver.resolve(station)
+                        } catch (_: Exception) {
+                            station.audioUrl
+                        }
+                    }
+                    player.play(resolvedUrl)
+                }
+            }
+        }
+    }
+
+    /** Fires when CastV2Client finishes connecting (or disconnects) -
+     * selectOutput() only kicks off the connection for a Cast device, since
+     * that's asynchronous; actually loading the stream once connected
+     * happens here. */
+    private fun onCastConnectionChanged(connected: Boolean) {
         val activeOutput = _state.value.activeOutputRendererId
         if (activeOutput == null || !activeOutput.startsWith(CAST_PREFIX)) return
         val station = _state.value.stations.find { it.id == _state.value.currentStationId }
 
-        if (session != null) {
+        if (connected) {
             if (station == null) return
             viewModelScope.launch {
                 val resolvedUrl = withContext(Dispatchers.IO) {
@@ -194,21 +241,31 @@ class TvViewModel(application: Application) : AndroidViewModel(application) {
         when {
             rendererId == null -> player.play(resolvedUrl)
             rendererId.startsWith(CAST_PREFIX) -> activateCastOutput(rendererId.removePrefix(CAST_PREFIX), station, resolvedUrl)
+            rendererId.startsWith(AIRPLAY_PREFIX) -> activateAirPlayOutput(rendererId.removePrefix(AIRPLAY_PREFIX), resolvedUrl)
             else -> activateUpnpOutput(rendererId, station, resolvedUrl)
         }
     }
 
-    // Cast SDK calls are not thread-safe like UpnpRendererService's plain
-    // blocking HTTP calls - they must stay on Main, which this already is
-    // (activateOutput only reaches Dispatchers.IO inside the UPnP branch).
+    private fun activateAirPlayOutput(routeId: String, resolvedUrl: String) {
+        player.stop()
+        if (airPlayRendererService.isConnected.value) {
+            airPlayRendererService.playStream(resolvedUrl)
+            _state.update { it.copy(activeOutputVolume = airPlayRendererService.getVolumePercent(), outputError = null) }
+        } else {
+            // Not connected yet - onAirPlayConnectionChanged() plays once
+            // RaopClient reports the RTSP handshake is done.
+            airPlayRendererService.selectDevice(routeId)
+        }
+    }
+
     private fun activateCastOutput(routeId: String, station: Station, resolvedUrl: String) {
         player.stop()
-        if (castRendererService.activeSession.value != null) {
+        if (castRendererService.isConnected.value) {
             castRendererService.playStream(resolvedUrl, title = station.name, artist = "")
             _state.update { it.copy(activeOutputVolume = castRendererService.getVolumePercent(), outputError = null) }
         } else {
-            // Not connected yet - onCastSessionChanged() plays once the
-            // SessionManagerListener reports the connection is up.
+            // Not connected yet - onCastConnectionChanged() plays once
+            // CastV2Client reports the connection is up.
             castRendererService.selectDevice(routeId)
         }
     }
@@ -237,6 +294,7 @@ class TvViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshUpnpRenderers() {
         castRendererService.startDiscovery()
+        airPlayRendererService.startDiscovery()
 
         viewModelScope.launch {
             _state.update { it.copy(isDiscoveringUpnp = true) }
@@ -285,10 +343,10 @@ class TvViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun stopOutput(rendererId: String) {
-        if (rendererId.startsWith(CAST_PREFIX)) {
-            castRendererService.stop()
-        } else {
-            viewModelScope.launch {
+        when {
+            rendererId.startsWith(CAST_PREFIX) -> castRendererService.stop()
+            rendererId.startsWith(AIRPLAY_PREFIX) -> airPlayRendererService.stop()
+            else -> viewModelScope.launch {
                 withContext(Dispatchers.IO) {
                     runCatching { upnpRendererService.getRenderer(rendererId)?.let { upnpRendererService.stop(it) } }
                 }
@@ -302,6 +360,11 @@ class TvViewModel(application: Application) : AndroidViewModel(application) {
             val current = castRendererService.getVolumePercent() ?: 50
             castRendererService.setVolumePercent(current + deltaPercent)
             _state.update { it.copy(activeOutputVolume = castRendererService.getVolumePercent()) }
+            return
+        }
+        if (rendererId.startsWith(AIRPLAY_PREFIX)) {
+            airPlayRendererService.setVolumePercent(airPlayRendererService.getVolumePercent() + deltaPercent)
+            _state.update { it.copy(activeOutputVolume = airPlayRendererService.getVolumePercent()) }
             return
         }
         viewModelScope.launch {
@@ -371,6 +434,7 @@ class TvViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
         player.release()
         castRendererService.stopDiscovery()
+        airPlayRendererService.stopDiscovery()
         super.onCleared()
     }
 }

@@ -2,141 +2,92 @@ package de.tbrbd.onradiotv.cast
 
 import android.content.Context
 import android.util.Log
-import androidx.mediarouter.media.MediaRouteSelector
-import androidx.mediarouter.media.MediaRouter
-import com.google.android.gms.cast.CastMediaControlIntent
-import com.google.android.gms.cast.MediaInfo
-import com.google.android.gms.cast.MediaLoadRequestData
-import com.google.android.gms.cast.MediaMetadata
-import com.google.android.gms.cast.framework.CastContext
-import com.google.android.gms.cast.framework.CastSession
-import com.google.android.gms.cast.framework.SessionManagerListener
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 private const val TAG = "CastRenderer"
+private const val CONNECT_TIMEOUT_MS = 8_000L
 
-data class CastDevice(val routeId: String, val name: String)
+data class CastDevice(val routeId: String, val name: String, val host: String, val port: Int)
 
-/** Google Cast counterpart to UpnpRendererService: same job (discover
- * renderers on the LAN, play/stop a stream, control volume), but almost
- * everything here is the official Cast SDK doing the actual mDNS discovery
- * and Cast v2 protocol work - androidx.mediarouter.MediaRouter surfaces the
- * discovered devices, and CastContext's SessionManager handles connecting
- * and loading media, unlike UpnpRendererService's hand-rolled SSDP/SOAP
- * client for UPnP renderers. */
+/** Google Cast output, backed by CastV2Client (a from-scratch protocol
+ * implementation) and CastDiscoveryManager (plain NsdManager/mDNS) rather
+ * than the official Cast SDK - see CastV2Client's doc comment for why.
+ * Mirrors UpnpRendererService's shape (discover/select/play/stop/volume) so
+ * TvViewModel can treat both outputs uniformly. */
 class CastRendererService(context: Context) {
-    private val appContext = context.applicationContext
-    private val mediaRouter = MediaRouter.getInstance(appContext)
-    private val castContext: CastContext? = try {
-        CastContext.getSharedInstance(appContext)
-    } catch (exc: Exception) {
-        // Missing/outdated Google Play services, or no Cast receiver ever
-        // configured on this build - Cast output just won't be offered.
-        Log.w(TAG, "CastContext unavailable: $exc")
-        null
-    }
+    private val discovery = CastDiscoveryManager(context)
+    val devices: StateFlow<List<CastDevice>> = discovery.devices
 
-    private val routeSelector = MediaRouteSelector.Builder()
-        .addControlCategory(CastMediaControlIntent.categoryForCast(CastMediaControlIntent.DEFAULT_MEDIA_RECEIVER_APPLICATION_ID))
-        .build()
+    private var client: CastV2Client? = null
+    private val _isConnected = MutableStateFlow(false)
+    val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
 
-    private val _devices = MutableStateFlow<List<CastDevice>>(emptyList())
-    val devices: StateFlow<List<CastDevice>> = _devices.asStateFlow()
+    fun startDiscovery() = discovery.start()
+    fun stopDiscovery() = discovery.stop()
 
-    private val _activeSession = MutableStateFlow<CastSession?>(null)
-    val activeSession: StateFlow<CastSession?> = _activeSession.asStateFlow()
-
-    private var discovering = false
-
-    private val routerCallback = object : MediaRouter.Callback() {
-        override fun onRouteAdded(router: MediaRouter, route: MediaRouter.RouteInfo) = refreshDevices()
-        override fun onRouteChanged(router: MediaRouter, route: MediaRouter.RouteInfo) = refreshDevices()
-        override fun onRouteRemoved(router: MediaRouter, route: MediaRouter.RouteInfo) = refreshDevices()
-    }
-
-    private val sessionListener = object : SessionManagerListener<CastSession> {
-        override fun onSessionStarted(session: CastSession, sessionId: String) {
-            _activeSession.value = session
-        }
-
-        override fun onSessionResumed(session: CastSession, wasSuspended: Boolean) {
-            _activeSession.value = session
-        }
-
-        override fun onSessionEnded(session: CastSession, error: Int) {
-            if (_activeSession.value === session) _activeSession.value = null
-        }
-
-        override fun onSessionStarting(session: CastSession) = Unit
-        override fun onSessionStartFailed(session: CastSession, error: Int) {
-            Log.w(TAG, "Session start failed: error=$error")
-        }
-        override fun onSessionEnding(session: CastSession) = Unit
-        override fun onSessionResuming(session: CastSession, sessionId: String) = Unit
-        override fun onSessionResumeFailed(session: CastSession, error: Int) = Unit
-        override fun onSessionSuspended(session: CastSession, reason: Int) = Unit
-    }
-
-    init {
-        castContext?.sessionManager?.addSessionManagerListener(sessionListener, CastSession::class.java)
-        castContext?.sessionManager?.currentCastSession?.let { _activeSession.value = it }
-    }
-
-    fun startDiscovery() {
-        if (castContext == null || discovering) return
-        discovering = true
-        mediaRouter.addCallback(routeSelector, routerCallback, MediaRouter.CALLBACK_FLAG_REQUEST_DISCOVERY)
-        refreshDevices()
-    }
-
-    fun stopDiscovery() {
-        if (!discovering) return
-        discovering = false
-        mediaRouter.removeCallback(routerCallback)
-    }
-
-    private fun refreshDevices() {
-        _devices.value = mediaRouter.routes
-            .filter { !it.isDefault && it.matchesSelector(routeSelector) }
-            .map { CastDevice(routeId = it.id, name = it.name) }
-    }
-
-    /** Selecting the route hands control to the Cast SDK, which connects and
-     * fires the SessionManagerListener callbacks above asynchronously -
-     * activeSession reflects the result, there's nothing to await here. */
+    /** Connects on a background thread (blocking socket I/O) and reports
+     * success/failure via isConnected once the receiver app's transportId
+     * is known - there's no synchronous "connected" return here, same as
+     * the official SDK's session callbacks were async. */
     fun selectDevice(routeId: String) {
-        val route = mediaRouter.routes.find { it.id == routeId } ?: return
-        mediaRouter.selectRoute(route)
+        val target = devices.value.find { it.routeId == routeId } ?: return
+        client?.disconnect()
+        _isConnected.value = false
+
+        val newClient = CastV2Client(target.host, target.port)
+        newClient.onDisconnected = {
+            if (client === newClient) {
+                client = null
+                _isConnected.value = false
+            }
+        }
+        client = newClient
+
+        Thread(
+            {
+                try {
+                    newClient.connect()
+                    newClient.launchMediaReceiver()
+                    val deadline = System.currentTimeMillis() + CONNECT_TIMEOUT_MS
+                    while (newClient.transportId == null && System.currentTimeMillis() < deadline) {
+                        Thread.sleep(100)
+                    }
+                    if (client === newClient) {
+                        _isConnected.value = newClient.transportId != null
+                    }
+                } catch (exc: Exception) {
+                    Log.w(TAG, "Connecting to ${target.name} failed: $exc")
+                    if (client === newClient) {
+                        client = null
+                        _isConnected.value = false
+                    }
+                }
+            },
+            "CastV2Connect",
+        ).start()
     }
 
     fun playStream(streamUrl: String, title: String, artist: String) {
-        val remoteMediaClient = _activeSession.value?.remoteMediaClient ?: return
-        val metadata = MediaMetadata(MediaMetadata.MEDIA_TYPE_MUSIC_TRACK).apply {
-            putString(MediaMetadata.KEY_TITLE, title)
-            putString(MediaMetadata.KEY_ARTIST, artist)
-        }
-        val mediaInfo = MediaInfo.Builder(streamUrl)
-            // BUFFERED (not LIVE) trades a little latency for a bigger
-            // buffer, which rides out WiFi jitter much better - matches
-            // app/cast_renderer.py's default on the Pi for the same reason.
-            .setStreamType(MediaInfo.STREAM_TYPE_BUFFERED)
-            .setContentType("audio/mpeg")
-            .setMetadata(metadata)
-            .build()
-        val request = MediaLoadRequestData.Builder().setMediaInfo(mediaInfo).setAutoplay(true).build()
-        remoteMediaClient.load(request)
+        client?.loadMedia(streamUrl, title = title, artist = artist)
     }
 
+    /** Halts media but deliberately leaves the CASTV2 connection itself
+     * open and isConnected unchanged (mirrors app/cast_renderer.py's
+     * stop(), which also only calls media_controller.stop() without
+     * disconnecting) - immediately tearing the connection down right after
+     * sending STOP raced the receiver actually processing it before the
+     * socket closed, so playback often kept going anyway. Staying connected
+     * also means switching back to this device later is instant, with
+     * activateCastOutput() reusing it directly instead of reconnecting. */
     fun stop() {
-        _activeSession.value?.remoteMediaClient?.stop()
-        castContext?.sessionManager?.endCurrentSession(true)
+        client?.stopMedia()
     }
 
-    fun getVolumePercent(): Int? = _activeSession.value?.volume?.let { (it * 100).toInt() }
+    fun getVolumePercent(): Int? = client?.currentVolumePercent
 
     fun setVolumePercent(percent: Int) {
-        _activeSession.value?.volume = percent.coerceIn(0, 100) / 100.0
+        client?.setVolume(percent)
     }
 }

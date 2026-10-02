@@ -55,6 +55,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import coil.compose.AsyncImage
+import de.tbrbd.onradiotv.airplay.AirPlayDevice
 import de.tbrbd.onradiotv.cast.CastDevice
 import de.tbrbd.onradiotv.data.UpnpRenderer
 import de.tbrbd.onradiotv.model.Station
@@ -141,6 +142,7 @@ fun TvScreen(
             OutputPickerOverlay(
                 renderers = state.upnpRenderers,
                 castDevices = state.castDevices,
+                airPlayDevices = state.airPlayDevices,
                 isDiscovering = state.isDiscoveringUpnp,
                 activeOutputRendererId = state.activeOutputRendererId,
                 activeOutputVolume = state.activeOutputVolume,
@@ -222,6 +224,7 @@ private fun SideColumn(
             OutputSelectorButton(
                 outputName = state.upnpRenderers.find { it.id == state.activeOutputRendererId }?.friendlyName
                     ?: state.castDevices.find { "cast:${it.routeId}" == state.activeOutputRendererId }?.name
+                    ?: state.airPlayDevices.find { "airplay:${it.routeId}" == state.activeOutputRendererId }?.name
                     ?: "Dieser Fernseher",
                 onOpen = onOpenOutputPicker,
             )
@@ -459,8 +462,16 @@ private fun StationPickerOverlay(
         val base = stations.groupBy { it.group }.map { (name, list) -> name to list }
         if (favoriteStations.isEmpty()) base else listOf(FAVORITES_GROUP to favoriteStations) + base
     }
-    val currentGroup = remember(stations, currentStationId) {
-        stations.find { it.id == currentStationId }?.group ?: groups.firstOrNull()?.first ?: ""
+    val currentGroup = remember(stations, currentStationId, favoriteIds) {
+        when {
+            // If the current pick is a favorite, land back on ★ Favoriten
+            // rather than its own genre category - picking a station via
+            // the favorites list and reopening the picker right after
+            // should return there, not bounce you into wherever that
+            // station natively lives.
+            currentStationId in favoriteIds -> FAVORITES_GROUP
+            else -> stations.find { it.id == currentStationId }?.group ?: groups.firstOrNull()?.first ?: ""
+        }
     }
     var selectedGroup by remember(stations) { mutableStateOf(currentGroup) }
     val groupFocusRequesters = remember(groups) { groups.associate { it.first to FocusRequester() } }
@@ -593,6 +604,12 @@ private fun GroupList(
                         // makes Up a no-op here instead of jumping across panes.
                         if (index == 0) Modifier.focusProperties { up = FocusRequester.Cancel } else Modifier
                     )
+                    .then(
+                        // Same idea at the bottom: without this, Down on the
+                        // last category has no neighbour below and can escape
+                        // the whole picker to whatever's behind it.
+                        if (index == groups.size - 1) Modifier.focusProperties { down = FocusRequester.Cancel } else Modifier
+                    )
                     .focusable(interactionSource = interactionSource)
                     .onKeyEvent { event ->
                         if (event.type == KeyEventType.KeyDown && event.key in ENTER_KEYS) {
@@ -603,13 +620,13 @@ private fun GroupList(
                             focusManager.moveFocus(FocusDirection.Right)
                             true
                         } else if (
-                            index == 0 &&
                             event.type == KeyEventType.KeyDown &&
-                            event.key == Key.DirectionUp
+                            ((index == 0 && event.key == Key.DirectionUp) ||
+                                (index == groups.size - 1 && event.key == Key.DirectionDown))
                         ) {
                             // Belt-and-braces alongside focusProperties above:
-                            // on this device, Up on the top row still escaped
-                            // to the station list despite up = Cancel, so
+                            // on this device, Up/Down at a list boundary still
+                            // escaped the picker despite up/down = Cancel, so
                             // swallow the key outright here too.
                             true
                         } else {
@@ -667,6 +684,7 @@ private fun StationList(
                     isCurrent = station.id == currentStationId,
                     isFavorite = station.id in favoriteIds,
                     isFirst = index == 0,
+                    isLast = index == stations.size - 1,
                     onSelect = { onSelect(station.id) },
                     onToggleFavorite = { onToggleFavorite(station.id) },
                     modifier = Modifier.focusRequester(itemFocusRequesters.getValue(station.id)),
@@ -699,6 +717,7 @@ private fun StationListItem(
     isCurrent: Boolean,
     isFavorite: Boolean,
     isFirst: Boolean,
+    isLast: Boolean,
     onSelect: () -> Unit,
     onToggleFavorite: () -> Unit,
     modifier: Modifier = Modifier,
@@ -726,6 +745,10 @@ private fun StationListItem(
             // top of this column jumps focus over to the category list
             // instead of just staying put.
             .then(if (isFirst) Modifier.focusProperties { up = FocusRequester.Cancel } else Modifier)
+            // Same idea at the bottom: without this, Down on the last
+            // station has no neighbour below and can escape the whole
+            // picker to whatever's behind it.
+            .then(if (isLast) Modifier.focusProperties { down = FocusRequester.Cancel } else Modifier)
             .focusable(interactionSource = interactionSource)
             .onKeyEvent { event ->
                 if (event.key in ENTER_KEYS) {
@@ -780,6 +803,9 @@ private fun StationListItem(
                     // this device, Up on the top row has been seen to escape
                     // to the category list despite up = Cancel, so swallow
                     // the key outright here too.
+                    true
+                } else if (isLast && event.type == KeyEventType.KeyDown && event.key == Key.DirectionDown) {
+                    // Same belt-and-braces at the bottom boundary.
                     true
                 } else {
                     false
@@ -912,6 +938,7 @@ private fun DialogButton(label: String, onClick: () -> Unit, modifier: Modifier 
 private fun OutputPickerOverlay(
     renderers: List<UpnpRenderer>,
     castDevices: List<CastDevice>,
+    airPlayDevices: List<AirPlayDevice>,
     isDiscovering: Boolean,
     activeOutputRendererId: String?,
     activeOutputVolume: Int?,
@@ -923,11 +950,41 @@ private fun OutputPickerOverlay(
 ) {
     BackHandler(onBack = onDismiss)
     val focusManager = LocalFocusManager.current
+    val firstRowFocusRequester = remember { FocusRequester() }
+
+    // Without this, opening the overlay never actually moves Android's real
+    // input focus into it (it just gets drawn on top) - D-pad events kept
+    // going to whatever was focused before (the "Ausgabe" button behind
+    // it), so Up/Down inside the overlay did nothing.
+    LaunchedEffect(Unit) {
+        try {
+            firstRowFocusRequester.requestFocus()
+        } catch (_: IllegalStateException) {
+            // Not laid out yet this frame - the list stays usable, it just
+            // won't have a specific initial focus target this one time.
+        }
+    }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(ScrimColor)
+            // Self-healing: if focus ever ends up outside this overlay's
+            // subtree entirely (observed live - refreshing the device list
+            // while a row was focused could knock focus back out to the
+            // "Ausgabe" button hidden behind this overlay), immediately
+            // reclaim it instead of leaving the D-pad silently controlling
+            // whatever's behind the scrim.
+            .onFocusChanged { state ->
+                if (!state.hasFocus) {
+                    try {
+                        firstRowFocusRequester.requestFocus()
+                    } catch (_: IllegalStateException) {
+                        // Not laid out yet - will self-heal on the next
+                        // focus-state change instead.
+                    }
+                }
+            }
             .onKeyEvent { event ->
                 if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
                 when (event.key) {
@@ -979,11 +1036,12 @@ private fun OutputPickerOverlay(
                             volume = null,
                             onSelect = { onSelect(null) },
                             onAdjustVolume = null,
+                            modifier = Modifier.focusRequester(firstRowFocusRequester),
                         )
                     }
                     itemsIndexed(renderers, key = { _, r -> r.id }) { _, renderer ->
                         OutputRow(
-                            name = renderer.friendlyName,
+                            name = "${renderer.friendlyName} (UPnP)",
                             isActive = activeOutputRendererId == renderer.id,
                             volume = if (activeOutputRendererId == renderer.id) activeOutputVolume else null,
                             onSelect = { onSelect(renderer.id) },
@@ -997,11 +1055,22 @@ private fun OutputPickerOverlay(
                         // field.
                         val castOutputId = "cast:${device.routeId}"
                         OutputRow(
-                            name = device.name,
+                            name = "${device.name} (Google Cast)",
                             isActive = activeOutputRendererId == castOutputId,
                             volume = if (activeOutputRendererId == castOutputId) activeOutputVolume else null,
                             onSelect = { onSelect(castOutputId) },
                             onAdjustVolume = if (activeOutputRendererId == castOutputId) onAdjustVolume else null,
+                        )
+                    }
+                    itemsIndexed(airPlayDevices, key = { _, d -> d.routeId }) { _, device ->
+                        // Must match TvViewModel's AIRPLAY_PREFIX ("airplay:").
+                        val airPlayOutputId = "airplay:${device.routeId}"
+                        OutputRow(
+                            name = "${device.name} (AirPlay)",
+                            isActive = activeOutputRendererId == airPlayOutputId,
+                            volume = if (activeOutputRendererId == airPlayOutputId) activeOutputVolume else null,
+                            onSelect = { onSelect(airPlayOutputId) },
+                            onAdjustVolume = if (activeOutputRendererId == airPlayOutputId) onAdjustVolume else null,
                         )
                     }
                 }
@@ -1024,13 +1093,22 @@ private fun RefreshRow(isDiscovering: Boolean, onRefresh: () -> Unit, modifier: 
     Surface(
         modifier = modifier
             .fillMaxWidth()
+            // This is the last focusable row in the picker - without this,
+            // pressing Down here has no further sibling within the overlay,
+            // so Compose's spatial search looks outside it and lands on
+            // whatever's behind the scrim (same class of bug as the station
+            // picker's top-row escape, fixed the same way: swallow the key
+            // outright rather than relying on focusProperties alone).
+            .focusProperties { down = FocusRequester.Cancel }
             .focusable(interactionSource = interactionSource)
             .onKeyEvent { event ->
-                if (event.type == KeyEventType.KeyDown && event.key in ENTER_KEYS) {
-                    onRefresh()
-                    true
-                } else {
-                    false
+                if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
+                when (event.key) {
+                    in ENTER_KEYS -> {
+                        onRefresh(); true
+                    }
+                    Key.DirectionDown -> true
+                    else -> false
                 }
             },
         color = if (isFocused) Color(0x29FFD166) else PanelColor,
@@ -1053,6 +1131,7 @@ private fun OutputRow(
     volume: Int?,
     onSelect: () -> Unit,
     onAdjustVolume: ((Int) -> Unit)?,
+    modifier: Modifier = Modifier,
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val isFocused by interactionSource.collectIsFocusedAsState()
@@ -1069,7 +1148,7 @@ private fun OutputRow(
     }
 
     Surface(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .focusable(interactionSource = interactionSource)
             .onKeyEvent { event ->

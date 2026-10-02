@@ -511,11 +511,35 @@ private fun cleanContentType(value: String?): String? {
     return if (cleaned == "audio/aacp") "audio/aac" else cleaned
 }
 
-private fun buildDidlMetadata(streamUrl: String, title: String, artist: String, stationName: String, mimeType: String, itemClass: String): String {
+/** Some renderers (certain Denon AVRs among them, by community report) are
+ * strict about `protocolInfo` and reject the generic `http-get:*:<mime>:*`
+ * wildcard outright - a proper DLNA.ORG_PN profile string satisfies them
+ * instead. OP=00 (no seek support) because a radio stream has no known
+ * length to seek within; the FLAGS value is the standard bitmask
+ * (sender-paced, background transfer, connection-stalling, DLNA v1.5) most
+ * DLNA servers use for unbounded live audio. Returns null for mime types
+ * with no well-known DLNA profile name, which just skips this variant. */
+private fun dlnaProtocolInfoFor(mimeType: String): String? {
+    val clean = cleanContentType(mimeType) ?: return null
+    val profile = when (clean) {
+        "audio/mpeg" -> "MP3"
+        "audio/aac" -> "AAC_ADTS"
+        else -> null
+    } ?: return null
+    return "http-get:*:$clean:DLNA.ORG_PN=$profile;DLNA.ORG_OP=00;DLNA.ORG_FLAGS=01700000000000000000000000000000"
+}
+
+private fun buildDidlMetadata(
+    streamUrl: String,
+    title: String,
+    artist: String,
+    stationName: String,
+    protocolInfo: String,
+    itemClass: String,
+): String {
     val safeTitle = title.ifBlank { stationName.ifBlank { "Radio Stream" } }
     val safeStation = stationName.ifBlank { "Radio" }
     val safeArtist = artist.ifBlank { safeStation }
-    val safeMime = cleanContentType(mimeType) ?: "audio/mpeg"
     return "<DIDL-Lite xmlns:dc=\"http://purl.org/dc/elements/1.1/\" " +
         "xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\" " +
         "xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\">" +
@@ -525,7 +549,7 @@ private fun buildDidlMetadata(streamUrl: String, title: String, artist: String, 
         "<upnp:artist>${xmlEscape(safeArtist)}</upnp:artist>" +
         "<upnp:album>${xmlEscape(safeStation)}</upnp:album>" +
         "<upnp:class>${xmlEscape(itemClass)}</upnp:class>" +
-        "<res protocolInfo=\"http-get:*:${xmlEscape(safeMime)}:*\">${xmlEscape(streamUrl)}</res>" +
+        "<res protocolInfo=\"${xmlEscape(protocolInfo)}\">${xmlEscape(streamUrl)}</res>" +
         "</item>" +
         "</DIDL-Lite>"
 }
@@ -545,9 +569,15 @@ private fun buildMetadataCandidates(
     val candidates = mutableListOf("")
     val seen = mutableSetOf("")
     for (mimeType in mimeCandidates) {
-        for (itemClass in listOf("object.item.audioItem.audioBroadcast", "object.item.audioItem.musicTrack")) {
-            val metadata = buildDidlMetadata(streamUrl, title, artist, stationName, mimeType, itemClass)
-            if (seen.add(metadata)) candidates.add(metadata)
+        val clean = cleanContentType(mimeType) ?: mimeType
+        // Try the stricter DLNA-profile protocolInfo first (more likely to
+        // satisfy a picky renderer), generic wildcard second.
+        val protocolInfoCandidates = listOfNotNull(dlnaProtocolInfoFor(mimeType), "http-get:*:$clean:*")
+        for (protocolInfo in protocolInfoCandidates) {
+            for (itemClass in listOf("object.item.audioItem.audioBroadcast", "object.item.audioItem.musicTrack")) {
+                val metadata = buildDidlMetadata(streamUrl, title, artist, stationName, protocolInfo, itemClass)
+                if (seen.add(metadata)) candidates.add(metadata)
+            }
         }
     }
     return candidates

@@ -12,8 +12,22 @@ android {
         applicationId = "de.tbrbd.onradiotv"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
+
+        ndk {
+            // The TV hardware tested against (and the emulator used earlier
+            // this session) covers both 32-bit (armeabi-v7a) and 64-bit
+            // (arm64-v8a) ARM - no need for x86/x86_64.
+            abiFilters += listOf("armeabi-v7a", "arm64-v8a")
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     buildTypes {
@@ -57,13 +71,13 @@ dependencies {
     // Playback
     implementation("androidx.media3:media3-exoplayer:1.4.1")
 
-    // Google Cast: official SDK handles discovery (mDNS) and the Cast v2
-    // control protocol itself, unlike the hand-rolled SSDP/SOAP client
-    // needed for UpnpRendererService - a plain unauthenticated
-    // CastMediaControlIntent.DEFAULT_MEDIA_RECEIVER_APPLICATION_ID session
-    // is enough to cast a radio stream URL, no custom receiver app needed.
-    implementation("com.google.android.gms:play-services-cast-framework:21.5.0")
-    implementation("androidx.mediarouter:mediarouter:1.7.0")
+    // Google Cast support is hand-rolled (CastV2Client/CastDiscoveryManager
+    // in the cast/ package) using plain Android NsdManager + a TLS socket,
+    // not the official play-services-cast-framework SDK - that SDK's
+    // CastContext needs a Play Services module not available on at least
+    // one real (non-Google-TV-certified) device tested. No extra
+    // dependency needed for it: NsdManager and javax.net.ssl are both
+    // built into the platform.
 
     // Networking + image loading
     implementation("com.squareup.okhttp3:okhttp:4.12.0")

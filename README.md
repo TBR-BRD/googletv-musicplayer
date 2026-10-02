@@ -30,8 +30,8 @@ This is **Phase 1** of a multi-stage plan:
 |---|---|---|
 | 1 | Station list, metadata, cover art, weather, playback on the TV itself | **done** |
 | 2 | Google Cast (throw to Chromecast-capable devices) | **done** |
-| 3 | UPnP/DLNA (Sonos, Denon) | **done** |
-| – | AirPlay | **intentionally out of scope** - see below |
+| 3 | UPnP/DLNA (Sonos, Denon) | **done** (Sonos; some AV receivers reject arbitrary stream URLs - see below) |
+| 4 | AirPlay (RAOP) | **implemented, not yet working against the two real receivers tested** - see below |
 
 Output device (this TV's own speaker, a Google Cast device, or a UPnP/DLNA
 renderer) is switchable at runtime from the "Ausgabe" picker next to the
@@ -42,12 +42,48 @@ media server content and will reject the stream), and Google Cast requires
 the TV's own Google Play Services to include the Cast framework module -
 not guaranteed on non-Google-TV-certified licensed Android TV hardware.
 
-## Why no AirPlay
+## AirPlay (RAOP) - implemented, but unproven on real hardware
 
-The Pi project uses `pyatv` for AirPlay, a Python-specific library. There is
-no maintained, working AirPlay sender implementation for Android/Kotlin.
-Anyone who wants to keep using AirPlay speakers still needs the Pi (or
-another AirPlay-capable source) for that - this app doesn't cover it.
+The Pi project uses `pyatv` for AirPlay, a Python-specific library with no
+Android/Kotlin equivalent, so this app's AirPlay sender (package
+`airplay/`) was written from scratch against the classic AirPlay 1 / RAOP
+protocol: an RTSP handshake (`OPTIONS`/`ANNOUNCE`/`SETUP`/`RECORD`/
+`SET_PARAMETER`/`TEARDOWN`), RTP audio streaming encoded as real Apple
+Lossless (via `app/src/main/cpp/alac/` - Apple's own open-source ALAC
+encoder, vendored and built through the NDK, wrapped by a small JNI layer
+in `AlacEncoder.kt`/`alac_jni.cpp`), RSA+AES-128-CBC payload encryption
+(`RaopCrypto.kt` - the RSA key is the long-published, non-secret RAOP
+public key every open-source AirPlay implementation embeds), and the
+control-channel packet retransmission real receivers request
+(`RaopClient.handleControlPacket`/`startControlListener`). Devices are
+discovered the same way as Cast/UPnP, via plain `NsdManager` (`_raop._tcp`).
+
+**Status: builds and runs a complete, protocol-correct session against
+real hardware, but produces no audible output on either receiver tested:**
+
+- **Denon AVR-X2000**: accepts the full handshake and a continuous,
+  correctly-encoded and -encrypted RTP stream with zero errors at any
+  layer, yet never produces sound. This was debugged through four
+  successive implementations (raw PCM, real ALAC, ALAC+encryption,
+  ALAC+encryption+retransmission) - all behave identically from this
+  app's point of view, which suggests a remaining gap this app can't
+  diagnose without comparing against a packet capture of a genuine Apple
+  sender talking to the same device (an authentication/pairing step this
+  implementation doesn't perform is the leading suspect).
+- **Samsung Music Frame**: rejects the `ANNOUNCE` step outright with
+  `403 Forbidden`, before any audio data is ever sent - likely a stricter
+  requirement (possibly mandatory encryption terms this implementation
+  doesn't meet, or additional AirPlay 2 negotiation it expects
+  unconditionally).
+
+Both of these devices work fine as outputs through this app via their
+*other* protocol (Google Cast for the Music Frame, UPnP is untested on it;
+UPnP itself fails on the Denon for an unrelated reason - see the phase 3
+note above). Anyone who wants AirPlay specifically still needs the Pi (or
+another genuine AirPlay source) for now. The code is left in rather than
+removed since the protocol work (handshake, ALAC, crypto, retransmission)
+is correct and reusable - it may just need a real device that's more
+lenient, or a further authentication step this app doesn't yet implement.
 
 ## Where the station list comes from
 
