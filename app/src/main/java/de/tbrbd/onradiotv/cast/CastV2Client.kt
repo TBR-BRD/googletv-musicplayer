@@ -61,6 +61,7 @@ class CastV2Client(private val host: String, private val port: Int) {
     @Volatile var currentVolumePercent: Int? = null
 
     @Volatile var onDisconnected: (() -> Unit)? = null
+    private var heartbeatThread: Thread? = null
 
     /** Blocking - caller must run this off the main thread. Returns once
      * the TLS handshake and initial CONNECT handshake message are sent;
@@ -86,6 +87,31 @@ class CastV2Client(private val host: String, private val port: Int) {
         send(NS_CONNECTION, RECEIVER_ID, JSONObject().put("type", "CONNECT"))
 
         thread(name = "CastV2Reader") { readLoop() }
+        startHeartbeat()
+    }
+
+    // Without this, an idle control socket (no volume/load/stop commands
+    // for a while - exactly the common case of "just let a station play")
+    // eventually gets silently dropped by a router's NAT table, a Wi-Fi
+    // power-save disconnect, or the receiver's own idle-connection cleanup.
+    // That looked, from here, identical to the device being turned off:
+    // onDisconnected fired and the app fell back to the TV's own speaker -
+    // while the actual Cast receiver, which pulls the stream itself rather
+    // than depending on this socket, kept right on playing. Real Cast
+    // senders avoid exactly this by pinging every few seconds; this does
+    // the same.
+    private fun startHeartbeat() {
+        heartbeatThread = thread(name = "CastV2Heartbeat") {
+            while (running) {
+                try {
+                    Thread.sleep(5_000)
+                } catch (_: InterruptedException) {
+                    break
+                }
+                if (!running) break
+                send(NS_HEARTBEAT, RECEIVER_ID, JSONObject().put("type", "PING"))
+            }
+        }
     }
 
     fun launchMediaReceiver() {
@@ -157,6 +183,7 @@ class CastV2Client(private val host: String, private val port: Int) {
 
     fun disconnect() {
         running = false
+        heartbeatThread?.interrupt()
         try {
             send(NS_CONNECTION, RECEIVER_ID, JSONObject().put("type", "CLOSE"))
         } catch (_: Exception) {
