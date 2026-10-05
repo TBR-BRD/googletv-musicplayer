@@ -176,12 +176,22 @@ private fun CoverColumn(coverUrl: String?, modifier: Modifier = Modifier) {
     // (rather than Crop) shows the whole cover with no part cut off,
     // letterboxed against the panel background above/below instead.
     Box(modifier = modifier.background(PanelColor).clipToBounds(), contentAlignment = Alignment.Center) {
-        AsyncImage(
-            model = coverUrl,
-            contentDescription = "Albumcover",
-            contentScale = ContentScale.Fit,
-            modifier = Modifier.fillMaxSize(),
-        )
+        if (coverUrl != null) {
+            AsyncImage(
+                model = coverUrl,
+                contentDescription = "Albumcover",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxSize(),
+            )
+        } else {
+            // No AsyncImage with a null model renders nothing at all - just
+            // an empty panel, easy to mistake for the app having frozen.
+            Text(
+                text = "🎵",
+                fontSize = 120.sp,
+                color = MutedColor,
+            )
+        }
     }
 }
 
