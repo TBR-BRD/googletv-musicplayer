@@ -177,11 +177,25 @@ well-known tracks.
 3. Hit "Run" - the app then also shows up as a regular app tile on the
    Google TV home screen (the Leanback launcher category is set).
 
-**Important note:** This code was written without access to Android
-Studio/an SDK/an emulator and was therefore **not build-tested in that
-environment** before the first real build - only carefully reviewed by
-hand. The first build in Android Studio is the real test. Report any
-build or runtime issues and they'll get fixed.
+### Signing
+
+Releases (from v0.4.0) are signed with a dedicated release key, so every
+new version installs over the previous one without losing favorites or
+settings. **Upgrading from v0.3.0 or older needs a one-time uninstall**
+first - those were signed with a per-machine debug key.
+
+- Release APKs are built by GitHub Actions
+  ([`release.yml`](.github/workflows/release.yml)) when a `v*` tag is
+  pushed, and attached to that release as `Radioplayer.apk`. The keystore
+  lives in the repository secrets `RADIOPLAYER_KEYSTORE_BASE64`,
+  `RADIOPLAYER_KEYSTORE_PASSWORD` and `RADIOPLAYER_KEY_ALIAS`.
+- Local builds use the same key if `~/.gradle/gradle.properties` defines
+  `RADIOPLAYER_KEYSTORE` (path to the .jks), `RADIOPLAYER_KEYSTORE_PASSWORD`
+  and `RADIOPLAYER_KEY_ALIAS` - debug builds included, so a locally built
+  APK can update an installed release. Without them the build falls back
+  to the machine's own debug key.
+- The keystore is not in this repository. Losing it means no further
+  update can be installed over an existing installation.
 
 ## Controls
 
@@ -208,6 +222,12 @@ build or runtime issues and they'll get fixed.
   volume (the remote's physical volume keys only control the TV's own
   volume - on-device testing found they never reach Android as a key event
   at all on at least one TV model, so there's no way to redirect them)
+- Remote shortcuts, from anywhere in the app:
+  - **Red / Green**: active WLAN speaker's volume down / up (2 % per press,
+    repeats while held) - no effect while playing on the TV's own speaker
+  - **⏪ / ⏩** (rewind / fast-forward): previous / next favorite, in the
+    order of the "★ Favorites" category, wrapping around
+  - A short on-screen notice shows the new volume or station
 - Playback stops automatically when the TV's screen turns off (standby),
   on whichever output is active
 

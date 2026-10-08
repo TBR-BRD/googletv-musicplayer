@@ -4,6 +4,15 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// Release signing key: from ~/.gradle/gradle.properties locally, or from
+// environment variables in CI (.github/workflows/release.yml). Without it the
+// build falls back to the machine's own debug key - fine for trying things
+// out, but such an APK can't update one signed with the release key.
+fun signingValue(name: String): String? =
+    (findProperty(name) as String?) ?: System.getenv(name)
+
+val releaseKeystore = signingValue("RADIOPLAYER_KEYSTORE")?.let { file(it) }?.takeIf { it.exists() }
+
 android {
     namespace = "de.tbrbd.onradiotv"
     compileSdk = 34
@@ -12,8 +21,8 @@ android {
         applicationId = "de.tbrbd.onradiotv"
         minSdk = 26
         targetSdk = 34
-        versionCode = 3
-        versionName = "0.3.0"
+        versionCode = 4
+        versionName = "0.4.0"
 
         ndk {
             // The TV hardware tested against (and the emulator used earlier
@@ -30,9 +39,26 @@ android {
         }
     }
 
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = releaseKeystore
+                storePassword = signingValue("RADIOPLAYER_KEYSTORE_PASSWORD")
+                keyAlias = signingValue("RADIOPLAYER_KEY_ALIAS")
+                keyPassword = signingValue("RADIOPLAYER_KEYSTORE_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
+        }
+        // Same key for debug builds, so a locally built APK can update an
+        // installed release (and vice versa) without uninstalling.
+        debug {
+            signingConfigs.findByName("release")?.let { signingConfig = it }
         }
     }
 

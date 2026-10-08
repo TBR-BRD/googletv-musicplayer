@@ -50,12 +50,16 @@ data class TvUiState(
     val activeOutputRendererId: String? = null,
     val activeOutputVolume: Int? = null,
     val outputError: String? = null,
+    // Short-lived on-screen notice for remote shortcuts (volume, favorite
+    // switch) - null = hidden. See showHud().
+    val hudText: String? = null,
 )
 
 private const val METADATA_REFRESH_MS = 15_000L
 private const val WEATHER_REFRESH_MS = 10 * 60_000L
 private const val CAST_PREFIX = "cast:"
 private const val AIRPLAY_PREFIX = "airplay:"
+private const val HUD_VISIBLE_MS = 2_000L
 
 class TvViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -80,6 +84,7 @@ class TvViewModel(application: Application) : AndroidViewModel(application) {
 
     private var metadataJob: Job? = null
     private var weatherJob: Job? = null
+    private var hudJob: Job? = null
 
     init {
         // Bundled snapshot first, so the app works immediately and offline -
@@ -360,11 +365,13 @@ class TvViewModel(application: Application) : AndroidViewModel(application) {
             val current = castRendererService.getVolumePercent() ?: 50
             castRendererService.setVolumePercent(current + deltaPercent)
             _state.update { it.copy(activeOutputVolume = castRendererService.getVolumePercent()) }
+            showVolumeHud()
             return
         }
         if (rendererId.startsWith(AIRPLAY_PREFIX)) {
             airPlayRendererService.setVolumePercent(airPlayRendererService.getVolumePercent() + deltaPercent)
             _state.update { it.copy(activeOutputVolume = airPlayRendererService.getVolumePercent()) }
+            showVolumeHud()
             return
         }
         viewModelScope.launch {
@@ -377,7 +384,52 @@ class TvViewModel(application: Application) : AndroidViewModel(application) {
             }
             if (newVolume != null) {
                 _state.update { it.copy(activeOutputVolume = newVolume) }
+                showVolumeHud()
             }
+        }
+    }
+
+    /** Remote shortcut (⏩/⏪): steps through the favorites in the same
+     * order as the "★ Favoriten" picker category (catalog order), wrapping
+     * around at either end. If the current station isn't a favorite, ⏩
+     * starts at the first one and ⏪ at the last. */
+    fun stepFavorite(direction: Int) {
+        val current = _state.value
+        val favorites = current.stations.filter { it.id in current.favoriteIds }
+        if (favorites.isEmpty()) {
+            showHud("Keine Favoriten")
+            return
+        }
+        val index = favorites.indexOfFirst { it.id == current.currentStationId }
+        val next = when {
+            index >= 0 -> favorites[Math.floorMod(index + direction, favorites.size)]
+            direction > 0 -> favorites.first()
+            else -> favorites.last()
+        }
+        selectStation(next.id)
+        showHud("★ ${next.name}")
+    }
+
+    private fun showVolumeHud() {
+        val current = _state.value
+        val rendererId = current.activeOutputRendererId ?: return
+        val name = when {
+            rendererId.startsWith(CAST_PREFIX) ->
+                current.castDevices.find { it.routeId == rendererId.removePrefix(CAST_PREFIX) }?.name
+            rendererId.startsWith(AIRPLAY_PREFIX) ->
+                current.airPlayDevices.find { it.routeId == rendererId.removePrefix(AIRPLAY_PREFIX) }?.name
+            else -> current.upnpRenderers.find { it.id == rendererId }?.friendlyName
+        }
+        val volume = current.activeOutputVolume?.let { "$it %" } ?: "?"
+        showHud("🔊 ${name ?: "Lautsprecher"}  $volume")
+    }
+
+    private fun showHud(text: String) {
+        hudJob?.cancel()
+        _state.update { it.copy(hudText = text) }
+        hudJob = viewModelScope.launch {
+            delay(HUD_VISIBLE_MS)
+            _state.update { it.copy(hudText = null) }
         }
     }
 

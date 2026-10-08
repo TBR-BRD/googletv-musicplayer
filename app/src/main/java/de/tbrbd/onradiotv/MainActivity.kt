@@ -5,6 +5,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.Bundle
+import android.util.Log
+import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
@@ -15,6 +17,9 @@ import de.tbrbd.onradiotv.ui.TvScreen
 import de.tbrbd.onradiotv.ui.TvViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+
+private const val TAG = "MainActivity"
+private const val REMOTE_VOLUME_STEP = 2
 
 class MainActivity : ComponentActivity() {
 
@@ -79,6 +84,37 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // Remote shortcuts, handled here before Compose focus routing so they
+    // work regardless of which button/list has focus: red/green = output
+    // volume -/+ (repeats while held), ⏪/⏩ = previous/next favorite.
+    // Every key that reaches the app is logged ("adb logcat -s MainActivity")
+    // to check which buttons a given TV/remote actually passes through.
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN) {
+            Log.d(TAG, "key ${KeyEvent.keyCodeToString(event.keyCode)} repeat=${event.repeatCount}")
+        }
+        val handled = when (event.keyCode) {
+            KeyEvent.KEYCODE_PROG_RED -> {
+                if (event.action == KeyEvent.ACTION_DOWN) viewModel.adjustActiveOutputVolume(-REMOTE_VOLUME_STEP)
+                true
+            }
+            KeyEvent.KEYCODE_PROG_GREEN -> {
+                if (event.action == KeyEvent.ACTION_DOWN) viewModel.adjustActiveOutputVolume(REMOTE_VOLUME_STEP)
+                true
+            }
+            KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
+                if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) viewModel.stepFavorite(1)
+                true
+            }
+            KeyEvent.KEYCODE_MEDIA_REWIND -> {
+                if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) viewModel.stepFavorite(-1)
+                true
+            }
+            else -> false
+        }
+        return handled || super.dispatchKeyEvent(event)
+    }
+
     // The remote's physical volume keys were tried for controlling the
     // active UPnP/Sonos output (both via dispatchKeyEvent() and a
     // MediaSession RemoteVolumeProvider - the mechanism Cast-style apps
@@ -88,5 +124,6 @@ class MainActivity : ComponentActivity() {
     // straight to its amp) before the OS input pipeline ever sees them. No
     // app-level API can intercept that, so volume for a WLAN-Lautsprecher
     // output is controlled on-screen instead (◀ ▶ on its row in the
-    // "Ausgabe" picker - see OutputRow in TvScreen.kt).
+    // "Ausgabe" picker - see OutputRow in TvScreen.kt) and via the red/green
+    // keys (dispatchKeyEvent above).
 }

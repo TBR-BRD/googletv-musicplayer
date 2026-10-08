@@ -167,6 +167,24 @@ fun TvScreen(
                 onDismiss = { isOutputPickerOpen = false },
             )
         }
+
+        state.hudText?.let { text ->
+            Surface(
+                color = PanelColor.copy(alpha = 0.92f),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.align(Alignment.TopCenter).padding(top = 40.dp),
+            ) {
+                Text(
+                    text = text,
+                    color = TextColor,
+                    fontSize = 28.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(horizontal = 32.dp, vertical = 16.dp),
+                )
+            }
+        }
     }
 }
 
