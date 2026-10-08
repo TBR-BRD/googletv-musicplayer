@@ -199,6 +199,8 @@ first - those were signed with a per-machine debug key.
 
 ## Controls
 
+<img src="docs/remote-metz.jpg" align="right" width="140" alt="Metz Google TV remote: red/green buttons control the WLAN speaker's volume, rewind/fast-forward switch between favorites">
+
 - **OK** on the "Station" button opens the station picker
 - The picker is **two-pane**: categories on the left (ON Radio, RADIO BOB!,
   ENERGY, HIT RADIO FFH, Absolut Radio, 80s80s, Sunshine Live, Other
@@ -228,8 +230,13 @@ first - those were signed with a per-machine debug key.
   - **⏪ / ⏩** (rewind / fast-forward): previous / next favorite, in the
     order of the "★ Favorites" category, wrapping around
   - A short on-screen notice shows the new volume or station
+  - Tested with the Metz Google TV remote pictured on the right; other
+    remotes work as long as they send the standard Android key codes
+    (`PROG_RED`/`PROG_GREEN`, `MEDIA_REWIND`/`MEDIA_FAST_FORWARD`)
 - Playback stops automatically when the TV's screen turns off (standby),
   on whichever output is active
+
+<br clear="right">
 
 ## Changing the weather location
 
